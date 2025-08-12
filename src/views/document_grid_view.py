@@ -25,7 +25,7 @@ class PageThumbnail(QFrame):
 
     def _setup_ui(self):
         """Setup thumbnail UI"""
-        self.setFrameStyle(QFrame.Box)
+        self.setFrameStyle(QFrame.Shape.Box)
         self.setLineWidth(2)
         self.setFixedSize(180, 240)
 
@@ -34,7 +34,7 @@ class PageThumbnail(QFrame):
 
         # Thumbnail image
         self.image_label = QLabel()
-        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setScaledContents(True)
         self.image_label.setFixedSize(160, 200)
         self.image_label.setStyleSheet("border: 1px solid #ccc;")
@@ -42,7 +42,7 @@ class PageThumbnail(QFrame):
 
         # Page info
         self.info_label = QLabel()
-        self.info_label.setAlignment(Qt.AlignCenter)
+        self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
 
