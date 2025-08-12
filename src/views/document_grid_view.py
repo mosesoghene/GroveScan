@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QGridLayout, QScrollArea, QLabel,
                                QPushButton, QVBoxLayout, QHBoxLayout, QFrame,
                                QMenu, QSizePolicy)
-from PySide6.QtCore import pyqtSignal, Qt, QSize
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QPixmap, QAction, QContextMenuEvent
 from ..models.scanned_page import ScannedPage
 from ..models.document_batch import DocumentBatch
@@ -12,9 +12,9 @@ import os
 class PageThumbnail(QFrame):
     """Individual page thumbnail widget"""
 
-    clicked = pyqtSignal(str)  # page_id
-    double_clicked = pyqtSignal(str)  # page_id
-    context_menu_requested = pyqtSignal(str, object)  # page_id, position
+    clicked = Signal(str)  # page_id
+    double_clicked = Signal(str)  # page_id
+    context_menu_requested = Signal(str, object)  # page_id, position
 
     def __init__(self, page: ScannedPage):
         super().__init__()
