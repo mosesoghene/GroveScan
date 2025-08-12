@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                                QComboBox, QTextEdit)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QBrush, QFont
-from src.models.page_assignment import PageAssignment
+from src.models.page_assignment import PageAssignment, AssignmentConflict, ValidationError
 from src.models.dynamic_index_schema import DynamicIndexSchema
 from src.models.document_batch import DocumentBatch
 from typing import List, Dict, Optional
@@ -158,6 +158,8 @@ class PageAssignmentView(QWidget):
         self.current_schema = None
         self.selected_assignment_id = None
         self.field_editors = {}  # field_name -> QLineEdit
+        self.selected_page_ids = []
+        self.assignment_widgets = {}  # assignment_id -> AssignmentWidget
         self._setup_ui()
         self._connect_signals()
 
@@ -327,4 +329,320 @@ class PageAssignmentView(QWidget):
     def set_current_schema(self, schema: DynamicIndexSchema):
         """Set current index schema"""
         self.current_schema = schema
-        self._rebuild_field_
+        self._rebuild_field_editors()
+        self._update_display()
+
+    def set_selected_pages(self, page_ids: List[str]):
+        """Set currently selected pages"""
+        self.selected_page_ids = page_ids
+        self.assign_btn.setEnabled(len(page_ids) > 0 and self.current_schema is not None)
+
+        if page_ids:
+            self.selected_pages_label.setText(f"{len(page_ids)} pages selected")
+        else:
+            self.selected_pages_label.setText("No pages selected")
+
+    def update_assignments(self, assignments: List[PageAssignment]):
+        """Update the assignments display"""
+        # Clear existing assignment widgets
+        for i in reversed(range(self.assignments_layout.count() - 1)):  # Keep stretch at end
+            item = self.assignments_layout.itemAt(i)
+            if item and item.widget():
+                item.widget().setParent(None)
+
+        self.assignment_widgets.clear()
+
+        # Add new assignment widgets
+        for assignment in assignments:
+            widget = AssignmentWidget(assignment)
+            widget.assignment_selected.connect(self._on_assignment_selected)
+            widget.assignment_edited.connect(self._on_assignment_edited)
+            widget.assignment_deleted.connect(self._on_assignment_deleted)
+
+            self.assignment_widgets[assignment.assignment_id] = widget
+            self.assignments_layout.insertWidget(self.assignments_layout.count() - 1, widget)
+
+        # Update count
+        self.assignments_count_label.setText(f"{len(assignments)} assignments")
+
+    def _rebuild_field_editors(self):
+        """Rebuild field value editors based on current schema"""
+        # Clear existing editors
+        for i in reversed(range(self.fields_layout.count())):
+            item = self.fields_layout.itemAt(i)
+            if item and item.widget():
+                item.widget().setParent(None)
+
+        self.field_editors.clear()
+
+        if not self.current_schema:
+            return
+
+        # Create editors for each field
+        for field in sorted(self.current_schema.fields, key=lambda x: x.order):
+            editor_widget = QWidget()
+            editor_layout = QHBoxLayout(editor_widget)
+            editor_layout.setContentsMargins(0, 5, 0, 5)
+
+            # Field label with type indicator
+            type_indicators = {
+                "folder": "📁",
+                "filename": "📄",
+                "metadata": "🏷️"
+            }
+
+            icon = type_indicators.get(field.field_type.value, "")
+            label_text = f"{icon} {field.name}:"
+            if field.is_required:
+                label_text += " *"
+
+            label = QLabel(label_text)
+            label.setMinimumWidth(120)
+            label.setStyleSheet("font-weight: bold;")
+            editor_layout.addWidget(label)
+
+            # Value editor
+            editor = QLineEdit()
+            editor.setText(field.default_value)
+            editor.setPlaceholderText(f"Enter {field.name.lower()}...")
+            editor.textChanged.connect(self._on_field_value_changed)
+
+            # Add validation styling if field has validation rules
+            if field.validation_rules.allowed_values:
+                editor.setToolTip(f"Allowed values: {', '.join(field.validation_rules.allowed_values)}")
+
+            self.field_editors[field.name] = editor
+            editor_layout.addWidget(editor)
+
+            self.fields_layout.addWidget(editor_widget)
+
+    def _on_field_value_changed(self):
+        """Handle field value changes"""
+        # Enable assign button if we have pages selected and values filled
+        has_values = any(editor.text().strip() for editor in self.field_editors.values())
+        has_pages = len(self.selected_page_ids) > 0
+        self.assign_btn.setEnabled(has_values and has_pages)
+
+    def _assign_selected_pages(self):
+        """Assign current field values to selected pages"""
+        if not self.selected_page_ids or not self.current_schema:
+            return
+
+        # Collect field values
+        values = {}
+        for field_name, editor in self.field_editors.items():
+            values[field_name] = editor.text().strip()
+
+        # Emit signal for controller to handle
+        self.assignment_requested.emit(self.selected_page_ids, values)
+
+    def _clear_field_values(self):
+        """Clear all field values"""
+        for editor in self.field_editors.values():
+            editor.clear()
+
+    def _auto_assign_pages(self):
+        """Auto-assign all pages with current values"""
+        if not self.current_batch or not self.current_schema:
+            QMessageBox.warning(self, "Auto Assignment", "No batch or schema loaded")
+            return
+
+        pages_per_doc = int(self.pages_per_doc_spin.currentText())
+
+        # Get base values from current field editors
+        base_values = {}
+        for field_name, editor in self.field_editors.items():
+            base_values[field_name] = editor.text().strip()
+
+        # Check if we have any values
+        if not any(base_values.values()):
+            QMessageBox.warning(self, "Auto Assignment", "Please fill in at least one field value")
+            return
+
+        # Get all page IDs
+        all_page_ids = [page.page_id for page in self.current_batch.scanned_pages]
+
+        # Create assignments for each group
+        for i in range(0, len(all_page_ids), pages_per_doc):
+            page_group = all_page_ids[i:i + pages_per_doc]
+
+            # Create values with document number for differentiation
+            values = base_values.copy()
+            doc_number = (i // pages_per_doc) + 1
+
+            # Add document number to filename fields
+            filename_fields = self.current_schema.get_filename_components()
+            if filename_fields:
+                # Add to first filename field
+                first_field = filename_fields[0]
+                current_value = values.get(first_field.name, "")
+                if current_value:
+                    values[first_field.name] = f"{current_value}_Doc{doc_number:03d}"
+                else:
+                    values[first_field.name] = f"Doc{doc_number:03d}"
+
+            # Request assignment
+            self.assignment_requested.emit(page_group, values)
+
+    def _validate_all_assignments(self):
+        """Validate all current assignments"""
+        # This will be handled by the controller
+        # For now, just show a message
+        QMessageBox.information(self, "Validation", "Assignment validation requested")
+
+    def _clear_all_assignments(self):
+        """Clear all assignments"""
+        reply = QMessageBox.question(
+            self,
+            "Clear All Assignments",
+            "Are you sure you want to clear all page assignments?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Clear assignment widgets
+            for widget in self.assignment_widgets.values():
+                widget.setParent(None)
+            self.assignment_widgets.clear()
+            self.assignments_count_label.setText("0 assignments")
+
+    def _on_assignment_selected(self, assignment_id: str):
+        """Handle assignment selection"""
+        self.selected_assignment_id = assignment_id
+        # Could highlight related pages in grid view
+        # This would need to be connected to the document grid
+
+    def _on_assignment_edited(self, assignment_id: str):
+        """Handle assignment edit request"""
+        # Load assignment values into field editors for editing
+        if assignment_id in self.assignment_widgets:
+            assignment = self.assignment_widgets[assignment_id].assignment
+
+            # Fill field editors with assignment values
+            for field_name, value in assignment.index_values.items():
+                if field_name in self.field_editors:
+                    self.field_editors[field_name].setText(value)
+
+            # Set selected pages to assignment pages
+            self.set_selected_pages(assignment.page_ids)
+
+            # Store for update instead of create
+            self.selected_assignment_id = assignment_id
+
+            # Change button text to indicate update mode
+            self.assign_btn.setText("Update Assignment")
+            self.assign_btn.clicked.disconnect()
+            self.assign_btn.clicked.connect(self._update_selected_assignment)
+
+    def _update_selected_assignment(self):
+        """Update the currently selected assignment"""
+        if not self.selected_assignment_id:
+            return
+
+        # Collect field values
+        values = {}
+        for field_name, editor in self.field_editors.items():
+            values[field_name] = editor.text().strip()
+
+        # Emit update signal
+        self.assignment_updated.emit(self.selected_assignment_id, values)
+
+        # Reset to create mode
+        self._reset_to_create_mode()
+
+    def _reset_to_create_mode(self):
+        """Reset interface to create mode"""
+        self.selected_assignment_id = None
+        self.assign_btn.setText("Assign Pages")
+        self.assign_btn.clicked.disconnect()
+        self.assign_btn.clicked.connect(self._assign_selected_pages)
+
+    def _on_assignment_deleted(self, assignment_id: str):
+        """Handle assignment deletion"""
+        reply = QMessageBox.question(
+            self,
+            "Delete Assignment",
+            "Are you sure you want to delete this assignment?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.assignment_deleted.emit(assignment_id)
+
+    def _refresh_preview(self):
+        """Refresh the export structure preview"""
+        if not self.current_schema or not self.assignment_widgets:
+            self.preview_tree.clear()
+            self.summary_label.setText("No assignments")
+            return
+
+        self.preview_tree.clear()
+
+        # Group assignments by folder structure
+        folder_groups = {}
+        total_docs = 0
+        total_pages = 0
+
+        for widget in self.assignment_widgets.values():
+            assignment = widget.assignment
+            folder_path = assignment.folder_path_preview or "Root"
+
+            if folder_path not in folder_groups:
+                folder_groups[folder_path] = []
+
+            folder_groups[folder_path].append(assignment)
+            total_docs += 1
+            total_pages += len(assignment.page_ids)
+
+        # Populate tree
+        for folder_path, assignments in folder_groups.items():
+            # Create folder item
+            folder_item = QTreeWidgetItem(self.preview_tree)
+            folder_item.setText(0, f"📁 {folder_path}")
+            folder_item.setText(1, f"{len(assignments)} docs")
+
+            # Add document items
+            for assignment in assignments:
+                doc_item = QTreeWidgetItem(folder_item)
+                doc_item.setText(0, f"📄 {assignment.document_name_preview}")
+                doc_item.setText(1, f"{len(assignment.page_ids)} pages")
+
+        # Expand all items
+        self.preview_tree.expandAll()
+
+        # Update summary
+        self.summary_label.setText(
+            f"Export will create {total_docs} documents from {total_pages} pages"
+        )
+
+    def _update_display(self):
+        """Update the entire display"""
+        self._rebuild_field_editors()
+        self._refresh_preview()
+
+    def show_validation_errors(self, errors: List[ValidationError]):
+        """Show validation errors to user"""
+        if not errors:
+            return
+
+        error_text = "Validation Errors:\n\n"
+        for error in errors:
+            error_text += f"• Assignment {error.assignment_id[:8]}...\n"
+            error_text += f"  Field '{error.field_name}': {error.error_message}\n"
+            error_text += f"  Pages: {len(error.page_ids)}\n\n"
+
+        QMessageBox.warning(self, "Validation Errors", error_text)
+
+    def show_assignment_conflicts(self, conflicts: List[AssignmentConflict]):
+        """Show assignment conflicts to user"""
+        if not conflicts:
+            return
+
+        conflict_text = "Assignment Conflicts:\n\n"
+        for conflict in conflicts:
+            conflict_text += f"• Page {conflict.page_id} is assigned to multiple documents\n"
+            conflict_text += f"  Conflicting assignments: {len(conflict.conflicting_assignments)}\n\n"
+
+        QMessageBox.warning(self, "Assignment Conflicts", conflict_text)

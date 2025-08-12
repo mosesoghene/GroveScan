@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                                QLineEdit, QTextEdit, QPushButton, QDialogButtonBox,
                                QGroupBox, QGridLayout, QComboBox, QSpinBox,
                                QCheckBox, QMessageBox, QListWidget, QListWidgetItem,
-                               QSplitter, QFileDialog, QProgressBar, QWidget)
+                               QSplitter, QFileDialog, QProgressBar, QWidget, QScrollArea)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from src.models.scan_profile import ScanProfile, ScannerSettings, ExportSettings
@@ -199,8 +199,6 @@ class ProfileManagerDialog(QDialog):
 
     def _create_profile_list_panel(self) -> QWidget:
         """Create profile list panel"""
-        from PySide6.QtWidgets import QWidget
-
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
@@ -239,8 +237,6 @@ class ProfileManagerDialog(QDialog):
 
     def _create_profile_details_panel(self) -> QWidget:
         """Create profile details panel"""
-        from PySide6.QtWidgets import QWidget, QScrollArea
-
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
@@ -559,19 +555,168 @@ class ProfileManagerDialog(QDialog):
             except Exception as e:
                 QMessageBox.critical(self, "Export Error", f"Failed to export profile:\n{str(e)}")
 
-    def get_profile_info(self) -> Dict:
-        """Get the profile information"""
+
+class QuickProfileDialog(QDialog):
+    """Quick dialog for creating simple profiles"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Quick Profile Setup")
+        self.setModal(True)
+        self.resize(500, 400)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        """Setup quick profile dialog"""
+        layout = QVBoxLayout(self)
+
+        # Profile name
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("Profile Name:"))
+        self.name_edit = QLineEdit()
+        name_layout.addWidget(self.name_edit)
+        layout.addLayout(name_layout)
+
+        # Quick templates
+        template_group = QGroupBox("Quick Templates")
+        template_layout = QVBoxLayout(template_group)
+
+        self.template_combo = QComboBox()
+        self.template_combo.addItem("Custom", "custom")
+        self.template_combo.addItem("Legal Documents (Client/Case/Document)", "legal")
+        self.template_combo.addItem("Medical Records (Department/Year/Patient)", "medical")
+        self.template_combo.addItem("Invoice Processing (Vendor/Year/Month)", "invoice")
+        self.template_combo.addItem("Archive Documents (Category/Year/Description)", "archive")
+        self.template_combo.currentTextChanged.connect(self._on_template_changed)
+        template_layout.addWidget(self.template_combo)
+
+        layout.addWidget(template_group)
+
+        # Template preview
+        self.preview_text = QTextEdit()
+        self.preview_text.setMaximumHeight(150)
+        self.preview_text.setReadOnly(True)
+        layout.addWidget(QLabel("Structure Preview:"))
+        layout.addWidget(self.preview_text)
+
+        # Dialog buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self._validate_and_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        # Initialize with first template
+        self._on_template_changed(self.template_combo.currentText())
+
+    def _on_template_changed(self, template_text):
+        """Handle template selection change"""
+        template_key = self.template_combo.currentData()
+
+        if template_key == "legal":
+            preview = """Fields:
+• Client (Folder) - Required
+• Case Type (Folder) - Required  
+• Document (Filename) - Required
+• Date (Filename) - Optional
+
+Example structure:
+/Smith/Divorce/Petition_2024-08-11.pdf
+/Jones/Contract/Agreement_2024-08-10.pdf"""
+
+        elif template_key == "medical":
+            preview = """Fields:
+• Department (Folder) - Required
+• Year (Folder) - Required
+• Month (Folder) - Required
+• Patient ID (Filename) - Required
+• Record Type (Filename) - Required
+
+Example structure:
+/Cardiology/2024/August/P001_Consultation.pdf
+/Neurology/2024/August/P003_MRI_Report.pdf"""
+
+        elif template_key == "invoice":
+            preview = """Fields:
+• Vendor (Folder) - Required
+• Year (Folder) - Required
+• Month (Folder) - Required
+• Invoice Number (Filename) - Required
+• Amount (Metadata) - Optional
+
+Example structure:
+/ACME_Corp/2024/August/INV001234.pdf
+/Office_Supplies/2024/July/INV005678.pdf"""
+
+        elif template_key == "archive":
+            preview = """Fields:
+• Category (Folder) - Required
+• Year (Folder) - Required
+• Description (Filename) - Required
+• Source (Metadata) - Optional
+
+Example structure:
+/Contracts/2024/Service_Agreement.pdf
+/Reports/2024/Annual_Summary.pdf"""
+
+        else:  # custom
+            preview = """Custom template - you can create your own field structure.
+
+Add any fields you need:
+• Folder fields create directory structure
+• Filename fields become part of document names
+• Metadata fields store additional information"""
+
+        self.preview_text.setText(preview)
+
+    def _validate_and_accept(self):
+        """Validate and create profile"""
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Validation Error", "Profile name is required.")
+            return
+
+        self.accept()
+
+    def get_profile_template(self) -> Dict:
+        """Get the selected profile template"""
+        from src.models.dynamic_index_schema import DynamicIndexSchema
+        from src.models.index_field import IndexField, IndexFieldType, ValidationRule
+
+        name = self.name_edit.text().strip()
+        template_key = self.template_combo.currentData()
+
+        schema = DynamicIndexSchema()
+
+        if template_key == "legal":
+            schema.add_field(IndexField("Client", IndexFieldType.FOLDER, 0, "", True))
+            schema.add_field(IndexField("Case Type", IndexFieldType.FOLDER, 1, "", True))
+            schema.add_field(IndexField("Document", IndexFieldType.FILENAME, 2, "", True))
+            schema.add_field(IndexField("Date", IndexFieldType.FILENAME, 3, "", False))
+
+        elif template_key == "medical":
+            schema.add_field(IndexField("Department", IndexFieldType.FOLDER, 0, "", True))
+            schema.add_field(IndexField("Year", IndexFieldType.FOLDER, 1, "", True))
+            schema.add_field(IndexField("Month", IndexFieldType.FOLDER, 2, "", True))
+            schema.add_field(IndexField("Patient ID", IndexFieldType.FILENAME, 3, "", True))
+            schema.add_field(IndexField("Record Type", IndexFieldType.FILENAME, 4, "", True))
+
+        elif template_key == "invoice":
+            schema.add_field(IndexField("Vendor", IndexFieldType.FOLDER, 0, "", True))
+            schema.add_field(IndexField("Year", IndexFieldType.FOLDER, 1, "", True))
+            schema.add_field(IndexField("Month", IndexFieldType.FOLDER, 2, "", True))
+            schema.add_field(IndexField("Invoice Number", IndexFieldType.FILENAME, 3, "", True))
+            schema.add_field(IndexField("Amount", IndexFieldType.METADATA, 4, "", False))
+
+        elif template_key == "archive":
+            schema.add_field(IndexField("Category", IndexFieldType.FOLDER, 0, "", True))
+            schema.add_field(IndexField("Year", IndexFieldType.FOLDER, 1, "", True))
+            schema.add_field(IndexField("Description", IndexFieldType.FILENAME, 2, "", True))
+            schema.add_field(IndexField("Source", IndexFieldType.METADATA, 3, "", False))
+
         return {
-            'name': self.name_edit.text().strip(),
-            'description': self.description_edit.toPlainText().strip(),
-            'scanner_settings': ScannerSettings(
-                resolution=int(self.resolution_combo.currentText()),
-                color_mode=self.color_mode_combo.currentText(),
-                format=self.format_combo.currentText()
-            ),
-            'export_settings': ExportSettings(
-                output_format=self.output_format_combo.currentText(),
-                create_folders=self.create_folders_check.isChecked(),
-                overwrite_existing=self.overwrite_check.isChecked()
-            )
+            'name': name,
+            'template_key': template_key,
+            'schema': schema
         }
