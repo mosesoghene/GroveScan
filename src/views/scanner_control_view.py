@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                                QComboBox, QSpinBox, QLabel, QPushButton,
                                QProgressBar, QTextEdit, QGridLayout)
-from PySide6.QtCore import pyqtSignal, Qt
+from PySide6.QtCore import Signal, Qt
 from ..models.scan_profile import ScannerSettings
 from ..models.scanner_interface import ScannerDevice
 from typing import List
@@ -11,9 +11,9 @@ class ScannerControlView(QWidget):
     """Scanner control panel widget"""
 
     # Signals
-    device_selection_changed = pyqtSignal(str)  # device_id
-    scan_requested = pyqtSignal(object, int, str)  # ScannerSettings, page_count, batch_name
-    stop_scan_requested = pyqtSignal()
+    device_selection_changed = Signal(str)  # device_id
+    scan_requested = Signal(object, int, str)  # ScannerSettings, page_count, batch_name
+    stop_scan_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -60,7 +60,7 @@ class ScannerControlView(QWidget):
         # Format
         settings_layout.addWidget(QLabel("Format:"), 2, 0)
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["TIFF", "PNG", "JPEG"])
+        self.format_combo.addItems(["TIFF", "PNG", "JPEG", "PDF"])
         settings_layout.addWidget(self.format_combo, 2, 1)
 
         # Quality (for JPEG)

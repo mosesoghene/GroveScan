@@ -1,4 +1,4 @@
-from PySide6.QtCore import QObject, pyqtSignal, QThread, QTimer
+from PySide6.QtCore import QObject, Signal, QThread, QTimer
 from typing import Optional, Callable, List
 from ..models.scanner_interface import ScannerInterface, MockScannerInterface, ScannerDevice
 from ..models.document_batch import DocumentBatch
@@ -9,10 +9,10 @@ import uuid
 
 class ScanWorker(QThread):
     """Worker thread for scanning operations"""
-    page_scanned = pyqtSignal(object)  # ScannedPage
-    scan_progress = pyqtSignal(int, int)  # current, total
-    scan_error = pyqtSignal(str)
-    scan_completed = pyqtSignal()
+    page_scanned = Signal(object)  # ScannedPage
+    scan_progress = Signal(int, int)  # current, total
+    scan_error = Signal(str)
+    scan_completed = Signal()
 
     def __init__(self, scanner: ScannerInterface, settings: ScannerSettings, page_count: int):
         super().__init__()
@@ -55,16 +55,16 @@ class ScanController(QObject):
     """Controller for scanning operations"""
 
     # Signals
-    devices_discovered = pyqtSignal(list)  # List[ScannerDevice]
-    device_connected = pyqtSignal(bool, str)  # success, message
-    page_scanned = pyqtSignal(object)  # ScannedPage
-    scan_progress = pyqtSignal(int, int, str)  # current, total, message
-    scan_completed = pyqtSignal(object)  # DocumentBatch
-    scan_error = pyqtSignal(str)
+    devices_discovered = Signal(list)  # List[ScannerDevice]
+    device_connected = Signal(bool, str)  # success, message
+    page_scanned = Signal(object)  # ScannedPage
+    scan_progress = Signal(int, int, str)  # current, total, message
+    scan_completed = Signal(object)  # DocumentBatch
+    scan_error = Signal(str)
 
     def __init__(self):
         super().__init__()
-        # For now, use mock scanner. In production, detect platform and use appropriate scanner
+        # For now, use mock scanner. In production, detect platform and use the appropriate scanner
         self.scanner_interface = MockScannerInterface()
         self.current_device = None
         self.current_batch = None
