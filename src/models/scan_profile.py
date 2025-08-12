@@ -102,3 +102,4 @@ class ScanProfile:
             modified_date=data.get('modified_date', datetime.now().isoformat()),
             description=data.get('description', '')
         )
+
