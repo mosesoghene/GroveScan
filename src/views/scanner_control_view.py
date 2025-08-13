@@ -162,7 +162,8 @@ class ScannerControlView(QWidget):
         if devices:
             for device in devices:
                 self.device_combo.addItem(f"{device.name} ({device.manufacturer})", device.device_id)
-            self.scan_btn.setEnabled(True)
+            # Only enable scan button if we have devices AND are not currently scanning
+            self.scan_btn.setEnabled(not self.is_scanning)
         else:
             self.device_combo.addItem("No devices found", "")
             self.scan_btn.setEnabled(False)
@@ -170,6 +171,7 @@ class ScannerControlView(QWidget):
     def set_device_connected(self, connected: bool, message: str):
         """Update device connection status"""
         self.append_status(message)
+        # Only enable scan button if connected AND not currently scanning
         self.scan_btn.setEnabled(connected and not self.is_scanning)
 
     def start_scan_feedback(self):
@@ -190,7 +192,9 @@ class ScannerControlView(QWidget):
     def finish_scan_feedback(self, success: bool = True):
         """Update UI for scan completion"""
         self.is_scanning = False
-        self.scan_btn.setEnabled(True)
+        # Re-enable scan button only if we have devices
+        has_devices = len(self.available_devices) > 0
+        self.scan_btn.setEnabled(has_devices)
         self.stop_btn.setEnabled(False)
         self.progress_bar.setVisible(False)
 
