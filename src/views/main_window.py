@@ -72,6 +72,11 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready - Create or load a profile to begin")
 
+    def _on_scan_error(self, error_message: str):
+        """Handle scan errors"""
+        self.scanner_control.show_error(error_message)
+        self.status_bar.showMessage(f"Scan error: {error_message}")
+
     def _create_left_panel(self) -> QWidget:
         """Create the left control panel"""
         # Create scrollable left panel
