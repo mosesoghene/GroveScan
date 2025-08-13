@@ -185,7 +185,7 @@ class MainWindow(QMainWindow):
 
         # Document controller signals
         self.app_controller.document_controller.batch_updated.connect(
-            self.document_grid.load_batch
+            self._on_batch_updated
         )
         self.app_controller.document_controller.page_updated.connect(
             self.document_grid.refresh_page_display
@@ -193,13 +193,13 @@ class MainWindow(QMainWindow):
 
         # Page assignment signals
         self.assignment_view.assignment_requested.connect(
-            self.app_controller.page_assignment_controller.assign_pages_to_index
+            self._on_assignment_requested
         )
         self.assignment_view.assignment_updated.connect(
-            self.app_controller.page_assignment_controller.update_assignment_values
+            self._on_assignment_updated
         )
         self.assignment_view.assignment_deleted.connect(
-            self.app_controller.page_assignment_controller.remove_assignment
+            self._on_assignment_deleted
         )
 
         # Page assignment controller signals
@@ -351,12 +351,20 @@ class MainWindow(QMainWindow):
         """Handle profile changes"""
         # Update application controller
         self.app_controller.profile_controller.set_current_profile(profile)
+
+        # Make sure assignment view has the schema
+        self.assignment_view.set_current_schema(profile.schema)
+
         self.status_bar.showMessage(f"Profile '{profile.name}' loaded", 3000)
 
     def _on_schema_changed(self, schema):
         """Handle schema changes"""
         # Update assignment view with new schema
         self.assignment_view.set_current_schema(schema)
+
+        # Also update the current profile's schema if we have one
+        if self.app_controller.profile_controller.current_profile:
+            self.app_controller.profile_controller.current_profile.schema = schema
 
     def _on_scan_completed(self, batch):
         """Handle scan completion"""
@@ -366,10 +374,41 @@ class MainWindow(QMainWindow):
         # Auto-switch to document grid tab
         self.tab_widget.setCurrentIndex(1)
 
-    def _on_scan_error(self, error_message):
-        """Handle scan errors"""
-        self.scanner_control.show_error(error_message)
-        self.scanner_control.finish_scan_feedback(False)
+    def _on_batch_updated(self, batch):
+        """Handle batch updates"""
+        # Update document grid
+        self.document_grid.load_batch(batch)
+
+        # Update assignment view with the batch
+        self.assignment_view.set_current_batch(batch)
+
+    def _on_assignment_requested(self, page_ids, index_values):
+        """Handle assignment request from assignment view"""
+        success = self.app_controller.page_assignment_controller.assign_pages_to_index(
+            page_ids, index_values
+        )
+        if success:
+            self.status_bar.showMessage(f"Assigned {len(page_ids)} pages to index values", 3000)
+        else:
+            self.status_bar.showMessage("Failed to assign pages", 3000)
+
+    def _on_assignment_updated(self, assignment_id, index_values):
+        """Handle assignment update from assignment view"""
+        success = self.app_controller.page_assignment_controller.update_assignment_values(
+            assignment_id, index_values
+        )
+        if success:
+            self.status_bar.showMessage("Assignment updated successfully", 3000)
+        else:
+            self.status_bar.showMessage("Failed to update assignment", 3000)
+
+    def _on_assignment_deleted(self, assignment_id):
+        """Handle assignment deletion from assignment view"""
+        success = self.app_controller.page_assignment_controller.remove_assignment(assignment_id)
+        if success:
+            self.status_bar.showMessage("Assignment deleted successfully", 3000)
+        else:
+            self.status_bar.showMessage("Failed to delete assignment", 3000)
 
     def _on_page_scanned(self, page):
         """Handle individual page scanned"""
@@ -379,6 +418,12 @@ class MainWindow(QMainWindow):
     def _on_pages_selected(self, page_ids):
         """Handle page selection in document grid"""
         self.assignment_view.set_selected_pages(page_ids)
+
+        # Debug: Print page selection
+        if page_ids:
+            print(f"DEBUG: Selected {len(page_ids)} pages: {page_ids[:3]}...")  # Show first 3 IDs
+        else:
+            print("DEBUG: No pages selected")
 
     def _on_tab_changed(self, index):
         """Handle tab changes"""
@@ -462,6 +507,9 @@ class MainWindow(QMainWindow):
 
         # Update preview
         self.profile_editor._update_preview()
+
+        # Update assignment view with schema
+        self.assignment_view.set_current_schema(profile.schema)
 
         # Notify application controller
         self.app_controller.profile_controller.set_current_profile(profile)
@@ -586,12 +634,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(tree)
 
         # Summary label
-        summary = QLabel(f"""
-        Export Summary:
-        • Total documents: {preview['total_documents']}
-        • Total pages: {preview['total_pages']}
-        • Folders to create: {preview['folder_structure']['total_folders']}
-        """)
+        summary = QLabel(f"""Export Summary:
+• Total documents: {preview['total_documents']}
+• Total pages: {preview['total_pages']}
+• Folders to create: {preview['folder_structure']['total_folders']}""")
         layout.addWidget(summary)
 
         # Dialog buttons
@@ -628,31 +674,91 @@ class MainWindow(QMainWindow):
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.show()
 
-        # TODO: Implement actual export logic here
-        # This would involve:
-        # 1. Creating folder structure
-        # 2. Combining pages into PDFs
-        # 3. Saving documents with proper names
-        # 4. Adding metadata
+        # Actual export implementation
+        import os
+        from pathlib import Path
+        from PIL import Image
 
-        # For now, simulate export
-        for i, group in enumerate(preview['document_groups']):
-            if progress.wasCanceled():
-                break
+        try:
+            exported_count = 0
 
-            progress.setValue(i)
-            progress.setLabelText(f"Exporting: {group['filename']}")
+            for i, group in enumerate(preview['document_groups']):
+                if progress.wasCanceled():
+                    break
 
-            # Simulate export delay
-            QTimer.singleShot(100, lambda: None)
+                progress.setValue(i)
+                progress.setLabelText(f"Exporting: {group['filename']}")
 
-        progress.setValue(preview['total_documents'])
+                # Create folder structure
+                folder_path = Path(export_dir) / group['folder_path'] if group['folder_path'] else Path(export_dir)
+                folder_path.mkdir(parents=True, exist_ok=True)
 
-        if not progress.wasCanceled():
-            QMessageBox.information(
+                # Get pages for this group
+                pages_to_export = []
+                current_batch = self.app_controller.document_controller.current_batch
+
+                if current_batch:
+                    for page_id in group['page_ids']:
+                        page = current_batch.get_page_by_id(page_id)
+                        if page and os.path.exists(page.image_path):
+                            pages_to_export.append(page)
+
+                if pages_to_export:
+                    # Create PDF from pages
+                    output_path = folder_path / group['filename']
+
+                    # Convert images to PDF
+                    if pages_to_export:
+                        images = []
+                        for page in pages_to_export:
+                            try:
+                                img = Image.open(page.image_path)
+                                # Apply rotation if needed
+                                if page.rotation != 0:
+                                    img = img.rotate(-page.rotation, expand=True)
+
+                                # Convert to RGB if needed (for PDF)
+                                if img.mode != 'RGB':
+                                    img = img.convert('RGB')
+                                images.append(img)
+                            except Exception as e:
+                                print(f"Error processing page {page.page_id}: {e}")
+
+                        if images:
+                            # Save as PDF
+                            images[0].save(
+                                str(output_path),
+                                "PDF",
+                                save_all=True,
+                                append_images=images[1:] if len(images) > 1 else [],
+                                quality=95
+                            )
+                            exported_count += 1
+
+                # Small delay for UI responsiveness
+                from PySide6.QtWidgets import QApplication
+                QApplication.instance().processEvents()
+
+            progress.setValue(preview['total_documents'])
+
+            if not progress.wasCanceled():
+                QMessageBox.information(
+                    self,
+                    "Export Complete",
+                    f"Successfully exported {exported_count} documents to:\n{export_dir}"
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Export Cancelled",
+                    f"Export cancelled. {exported_count} documents were exported before cancellation."
+                )
+
+        except Exception as e:
+            QMessageBox.critical(
                 self,
-                "Export Complete",
-                f"Successfully exported {preview['total_documents']} documents to:\n{export_dir}"
+                "Export Error",
+                f"An error occurred during export:\n{str(e)}"
             )
 
     def _show_about(self):
