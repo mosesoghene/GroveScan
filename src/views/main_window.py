@@ -1,18 +1,19 @@
-from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                               QSplitter, QTabWidget, QMenuBar, QMenu, QStatusBar,
-                               QMessageBox, QFileDialog, QProgressDialog, QDockWidget, QLabel)
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QSplitter, QTabWidget, QStatusBar,
+                               QMessageBox, QLabel, QTreeWidgetItem,
+                               QDialogButtonBox, QTreeWidget, QDialog)
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 
 # Import our custom widgets and controllers
-from .app_controller import ApplicationController
+from src.controllers.app_controller import ApplicationController
 from .workflow_widget import WorkflowStatusWidget
 from .dynamic_index_editor import DynamicIndexEditor
 from .document_grid_view import DocumentGridView
 from .page_assignment_view import PageAssignmentView
 from .scanner_control_view import ScannerControlView
 from .profile_dialog import ProfileManagerDialog, QuickProfileDialog
-from src.models.scan_profile import ScanProfile
+from src.models.scan_profile import ScanProfile, ExportSettings
+from .export_dialog import ExportPreviewDialog, ExportProgressDialog
 
 
 class MainWindow(QMainWindow):
@@ -602,11 +603,27 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Cannot Preview", message)
             return
 
-        preview = self.app_controller.get_export_preview()
+        # Get export summary from controller
+        assignments = self.app_controller.page_assignment_controller.get_all_assignments()
+        export_controller = self.app_controller.get_export_controller()
 
-        # Create preview dialog
-        from PySide6.QtWidgets import QDialog, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QDialogButtonBox
+        # Set up export controller
+        # Set up export controller with default settings
+        default_settings = ExportSettings()
+        export_controller.set_export_settings(default_settings)
+        export_controller.set_current_batch(self.app_controller.document_controller.current_batch)
+        export_controller.set_current_schema(
+            self.app_controller.profile_controller.current_profile.schema
+        )
 
+
+        default_settings = ExportSettings()
+        export_controller.set_export_settings(default_settings)
+
+        export_summary = export_controller.get_export_summary_for_assignments(assignments)
+        preview = export_summary['preview']
+
+        # Create simple preview dialog
         dialog = QDialog(self)
         dialog.setWindowTitle("Export Structure Preview")
         dialog.resize(600, 400)
@@ -614,7 +631,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
 
         tree = QTreeWidget()
-        tree.setHeaderLabels(["Structure", "Pages"])
+        tree.setHeaderLabels(["Structure", "Pages", "Size"])
 
         # Group by folders
         folder_groups = {}
@@ -630,19 +647,28 @@ class MainWindow(QMainWindow):
             folder_item.setText(0, f"📁 {folder_path}")
             folder_item.setText(1, f"{len(groups)} documents")
 
+            total_pages = sum(g['page_count'] for g in groups)
+            folder_item.setText(2, f"{total_pages} pages")
+
             for group in groups:
                 doc_item = QTreeWidgetItem(folder_item)
                 doc_item.setText(0, f"📄 {group['filename']}")
                 doc_item.setText(1, f"{group['page_count']} pages")
+
+                # Estimate size
+                size_kb = group['page_count'] * 500
+                size_text = f"{size_kb / 1024:.1f} MB" if size_kb > 1024 else f"{size_kb} KB"
+                doc_item.setText(2, size_text)
 
         tree.expandAll()
         layout.addWidget(tree)
 
         # Summary label
         summary = QLabel(f"""Export Summary:
-• Total documents: {preview['total_documents']}
-• Total pages: {preview['total_pages']}
-• Folders to create: {preview['folder_structure']['total_folders']}""")
+    - Total documents: {preview['total_documents']}
+    - Total pages: {preview['total_pages']}
+    - Folders to create: {preview['folder_structure']['total_folders']}
+    - Estimated size: {export_summary.get('estimated_file_size_mb', 0):.1f} MB""")
         layout.addWidget(summary)
 
         # Dialog buttons
@@ -661,110 +687,67 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Cannot Export", message)
             return
 
-        # Get export directory
-        export_dir = QFileDialog.getExistingDirectory(
-            self,
-            "Select Export Directory",
-            ""
+        # Get export summary from controller
+        assignments = self.app_controller.page_assignment_controller.get_all_assignments()
+        export_controller = self.app_controller.get_export_controller()
+
+        # Set up export controller
+        export_controller.set_current_batch(self.app_controller.document_controller.current_batch)
+        export_controller.set_current_schema(
+            self.app_controller.profile_controller.current_profile.schema
         )
 
-        if not export_dir:
-            return
+        export_summary = export_controller.get_export_summary_for_assignments(assignments)
 
-        # Get export preview
-        preview = self.app_controller.get_export_preview()
+        # Show export preview dialog
+        preview_dialog = ExportPreviewDialog(export_summary, self)
+        preview_dialog.export_confirmed.connect(self._start_export_with_settings)
+        preview_dialog.exec()
 
-        # Create progress dialog
-        progress = QProgressDialog("Exporting documents...", "Cancel", 0, preview['total_documents'], self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.show()
-
-        # Actual export implementation
-        import os
-        from pathlib import Path
-        from PIL import Image
-
+    def _start_export_with_settings(self, output_dir: str, export_settings: dict):
+        """Start export with specified settings"""
         try:
-            exported_count = 0
+            # Start export process
+            success = self.app_controller.start_export_process(output_dir, export_settings)
 
-            for i, group in enumerate(preview['document_groups']):
-                if progress.wasCanceled():
-                    break
+            if not success:
+                QMessageBox.warning(self, "Export Error", "Failed to start export process.")
+                return
 
-                progress.setValue(i)
-                progress.setLabelText(f"Exporting: {group['filename']}")
+            # Get assignments for progress tracking
+            assignments = self.app_controller.page_assignment_controller.get_all_assignments()
+            total_docs = len([a for a in assignments if a.page_ids])
 
-                # Create folder structure
-                folder_path = Path(export_dir) / group['folder_path'] if group['folder_path'] else Path(export_dir)
-                folder_path.mkdir(parents=True, exist_ok=True)
+            # Show progress dialog
+            progress_dialog = ExportProgressDialog(total_docs, self)
 
-                # Get pages for this group
-                pages_to_export = []
-                current_batch = self.app_controller.document_controller.current_batch
+            # Connect export controller signals to progress dialog
+            export_controller = self.app_controller.get_export_controller()
+            export_controller.export_progress.connect(progress_dialog.update_progress)
+            export_controller.document_exported.connect(progress_dialog.document_exported)
+            export_controller.export_error.connect(progress_dialog.export_error)
+            export_controller.export_completed.connect(progress_dialog.export_completed)
+            export_controller.export_completed.connect(self._on_export_process_completed)
 
-                if current_batch:
-                    for page_id in group['page_ids']:
-                        page = current_batch.get_page_by_id(page_id)
-                        if page and os.path.exists(page.image_path):
-                            pages_to_export.append(page)
+            # Connect cancel signal
+            progress_dialog.export_cancelled.connect(export_controller.stop_export)
 
-                if pages_to_export:
-                    # Create PDF from pages
-                    output_path = folder_path / group['filename']
-
-                    # Convert images to PDF
-                    if pages_to_export:
-                        images = []
-                        for page in pages_to_export:
-                            try:
-                                img = Image.open(page.image_path)
-                                # Apply rotation if needed
-                                if page.rotation != 0:
-                                    img = img.rotate(-page.rotation, expand=True)
-
-                                # Convert to RGB if needed (for PDF)
-                                if img.mode != 'RGB':
-                                    img = img.convert('RGB')
-                                images.append(img)
-                            except Exception as e:
-                                print(f"Error processing page {page.page_id}: {e}")
-
-                        if images:
-                            # Save as PDF
-                            images[0].save(
-                                str(output_path),
-                                "PDF",
-                                save_all=True,
-                                append_images=images[1:] if len(images) > 1 else [],
-                                quality=95
-                            )
-                            exported_count += 1
-
-                # Small delay for UI responsiveness
-                from PySide6.QtWidgets import QApplication
-                QApplication.instance().processEvents()
-
-            progress.setValue(preview['total_documents'])
-
-            if not progress.wasCanceled():
-                QMessageBox.information(
-                    self,
-                    "Export Complete",
-                    f"Successfully exported {exported_count} documents to:\n{export_dir}"
-                )
-            else:
-                QMessageBox.information(
-                    self,
-                    "Export Cancelled",
-                    f"Export cancelled. {exported_count} documents were exported before cancellation."
-                )
+            progress_dialog.exec()
 
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Export Error",
-                f"An error occurred during export:\n{str(e)}"
-            )
+            QMessageBox.critical(self, "Export Error", f"An error occurred during export:\n{str(e)}")
+
+    def _on_export_process_completed(self, summary: dict):
+        """Handle export process completion"""
+        success_count = summary.get('successful_exports', 0)
+        total_count = summary.get('total_documents', 0)
+
+        if success_count == total_count:
+            self.status_bar.showMessage(f"Export completed successfully! {success_count} documents exported.", 5000)
+        else:
+            failed_count = summary.get('failed_exports', 0)
+            self.status_bar.showMessage(
+                f"Export completed with issues. {success_count} successful, {failed_count} failed.", 5000)
 
     def _show_about(self):
         """Show about dialog"""

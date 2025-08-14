@@ -1,12 +1,13 @@
 from PySide6.QtCore import QObject, Signal
 from typing import Dict, List, Optional
-from ..controllers.scan_controller import ScanController
-from ..controllers.document_controller import DocumentController
-from ..controllers.profile_controller import ProfileController
-from ..controllers.page_assignment_controller import PageAssignmentController
-from ..models.scan_profile import ScanProfile
-from ..models.document_batch import DocumentBatch
-from ..models.dynamic_index_schema import DynamicIndexSchema
+from src.controllers.scan_controller import ScanController
+from src.controllers.document_controller import DocumentController
+from src.controllers.profile_controller import ProfileController
+from src.controllers.page_assignment_controller import PageAssignmentController
+from src.models.scan_profile import ScanProfile
+from src.models.document_batch import DocumentBatch
+from src.models.dynamic_index_schema import DynamicIndexSchema
+from src.controllers.export_controller import DocumentExportController
 
 
 class ApplicationController(QObject):
@@ -25,6 +26,7 @@ class ApplicationController(QObject):
         self.document_controller = DocumentController()
         self.profile_controller = ProfileController()
         self.page_assignment_controller = PageAssignmentController()
+        self.export_controller = DocumentExportController()
 
         # Application state
         self.current_workflow_step = "initial"  # initial, profile_ready, scanned, assigned, ready_to_export
@@ -55,6 +57,9 @@ class ApplicationController(QObject):
         # Assignment events
         self.page_assignment_controller.assignments_changed.connect(self._on_assignments_changed)
         self.page_assignment_controller.operation_error.connect(self._on_controller_error)
+
+        self.export_controller.export_completed.connect(self._on_export_completed)
+        self.export_controller.validation_failed.connect(self._on_export_validation_failed)
 
     def _on_profile_loaded(self, profile: ScanProfile):
         """Handle profile loading"""
@@ -293,5 +298,48 @@ class ApplicationController(QObject):
             })
 
         return guidance
+
+    def _on_export_completed(self, summary: dict):
+        """Handle export completion"""
+        self.workflow_step_completed.emit(f"export_completed_{summary['successful_exports']}_docs")
+
+    def _on_export_validation_failed(self, errors: list):
+        """Handle export validation failure"""
+        error_msg = "Export validation failed: " + "; ".join(errors[:3])
+        self.critical_error.emit(error_msg)
+
+    def can_start_export(self) -> tuple[bool, str]:
+        """Check if export can be started"""
+        return self.can_proceed_to_export()
+
+    def start_export_process(self, output_directory: str, export_settings: dict = None) -> bool:
+        """Start the export process"""
+        if not self.application_state['ready_to_export']:
+            return False
+
+        assignments = self.page_assignment_controller.get_all_assignments()
+
+        # Set export settings if provided
+        if export_settings:
+            from src.models.scan_profile import ExportSettings
+            settings = ExportSettings(
+                output_format="PDF",
+                pdf_quality=export_settings.get('pdf_quality', 95),
+                create_folders=export_settings.get('create_folders', True),
+                overwrite_existing=export_settings.get('overwrite_existing', False)
+            )
+            self.export_controller.set_export_settings(settings)
+
+        # Set current batch and schema
+        self.export_controller.set_current_batch(self.document_controller.current_batch)
+        self.export_controller.set_current_schema(
+            self.profile_controller.current_profile.schema if self.profile_controller.current_profile else None
+        )
+
+        return self.export_controller.start_export(assignments, output_directory)
+
+    def get_export_controller(self):
+        """Get the export controller"""
+        return self.export_controller
 
     
