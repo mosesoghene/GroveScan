@@ -1,5 +1,7 @@
 from PySide6.QtCore import QObject, Signal
 from typing import Dict, List, Optional
+
+from src.controllers.export_controller import DocumentExportController
 from src.controllers.scan_controller import ScanController
 from src.controllers.document_controller import DocumentController
 from src.controllers.profile_controller import ProfileController
@@ -7,7 +9,6 @@ from src.controllers.page_assignment_controller import PageAssignmentController
 from src.models.scan_profile import ScanProfile
 from src.models.document_batch import DocumentBatch
 from src.models.dynamic_index_schema import DynamicIndexSchema
-from src.controllers.export_controller import DocumentExportController
 
 
 class ApplicationController(QObject):

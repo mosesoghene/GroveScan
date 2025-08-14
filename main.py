@@ -22,6 +22,7 @@ if src_path.exists():
 def check_dependencies():
     """Check if all required dependencies are available"""
     missing_deps = []
+    optional_deps = []
 
     try:
         import PySide6
@@ -33,13 +34,27 @@ def check_dependencies():
     except ImportError:
         missing_deps.append("Pillow")
 
+    # Check optional dependencies
+    try:
+        import reportlab
+    except ImportError:
+        optional_deps.append("reportlab")
+
     if missing_deps:
-        print("Missing dependencies:")
+        print("Missing required dependencies:")
         for dep in missing_deps:
             print(f"  - {dep}")
         print("\nInstall missing dependencies with:")
         print(f"  pip install {' '.join(missing_deps)}")
         return False
+
+    if optional_deps:
+        print("Optional dependencies not found (advanced features may be limited):")
+        for dep in optional_deps:
+            print(f"  - {dep}")
+        print("\nInstall optional dependencies with:")
+        print(f"  pip install {' '.join(optional_deps)}")
+        print("Note: ReportLab provides advanced PDF features\n")
 
     return True
 

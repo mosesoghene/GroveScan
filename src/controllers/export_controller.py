@@ -1,19 +1,16 @@
-import gc
-import json
-from dataclasses import dataclass
-from datetime import datetime
-from enum import Enum
-
 from PySide6.QtCore import QObject, Signal, QThread
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 from PIL import Image
 import os
+import json
 import tempfile
-from src.models.document_batch import DocumentBatch
-from src.models.page_assignment import PageAssignment
-from src.models.dynamic_index_schema import DynamicIndexSchema
-from src.models.scan_profile import ExportSettings
+import gc
+from datetime import datetime
+from dataclasses import dataclass
+from enum import Enum
+
+from src.models import ExportSettings
 
 # Try to import reportlab for advanced PDF features
 try:
@@ -26,365 +23,9 @@ try:
 except ImportError:
     HAS_REPORTLAB = False
 
-
-class ExportWorker(QThread):
-    """Worker thread for document export operations"""
-
-    export_progress = Signal(int, int, str)  # current, total, message
-    document_exported = Signal(str, str)  # document_name, output_path
-    export_error = Signal(str, str)  # document_name, error_message
-    export_completed = Signal(int, int)  # successful_count, total_count
-
-    def __init__(self, export_groups: List[Dict], output_dir: str, batch: DocumentBatch,
-                 export_settings: ExportSettings):
-        super().__init__()
-        self.export_groups = export_groups
-        self.output_dir = output_dir
-        self.batch = batch
-        self.export_settings = export_settings
-        self.should_stop = False
-        self.successful_exports = 0
-
-    def run(self):
-        """Run export in separate thread"""
-        try:
-            total_docs = len(self.export_groups)
-
-            for i, group in enumerate(self.export_groups):
-                if self.should_stop:
-                    break
-
-                document_name = group['filename']
-                self.export_progress.emit(i, total_docs, f"Exporting: {document_name}")
-
-                try:
-                    output_path = self._export_document_group(group)
-                    if output_path:
-                        self.document_exported.emit(document_name, output_path)
-                        self.successful_exports += 1
-                    else:
-                        self.export_error.emit(document_name, "Failed to create document")
-
-                except Exception as e:
-                    self.export_error.emit(document_name, str(e))
-
-                # Small delay for UI responsiveness
-                self.msleep(100)
-
-            self.export_completed.emit(self.successful_exports, total_docs)
-
-        except Exception as e:
-            self.export_error.emit("Export Process", f"Critical error: {str(e)}")
-
-    def _export_document_group(self, group: Dict) -> Optional[str]:
-        """Export a single document group"""
-        try:
-            # Create folder structure
-            folder_path = Path(self.output_dir)
-            if group['folder_path']:
-                folder_path = folder_path / group['folder_path']
-
-            folder_path.mkdir(parents=True, exist_ok=True)
-
-            # Collect pages for this group
-            pages_to_export = []
-            for page_id in group['page_ids']:
-                page = self.batch.get_page_by_id(page_id)
-                if page and os.path.exists(page.image_path):
-                    pages_to_export.append(page)
-
-            if not pages_to_export:
-                return None
-
-            # Generate output filename
-            output_filename = group['filename']
-            if not output_filename.lower().endswith('.pdf'):
-                output_filename += '.pdf'
-
-            output_path = folder_path / output_filename
-
-            # Handle existing files
-            if output_path.exists() and not self.export_settings.overwrite_existing:
-                # Add number suffix
-                counter = 1
-                base_name = output_path.stem
-                while output_path.exists():
-                    new_name = f"{base_name}_{counter:03d}.pdf"
-                    output_path = folder_path / new_name
-                    counter += 1
-
-            # Create PDF from pages
-            success = self._create_pdf_from_pages(pages_to_export, str(output_path))
-
-            return str(output_path) if success else None
-
-        except Exception as e:
-            raise Exception(f"Error exporting document group: {str(e)}")
-
-    def _create_pdf_from_pages(self, pages: List, output_path: str) -> bool:
-        """Create PDF from list of pages"""
-        try:
-            images = []
-
-            for page in pages:
-                try:
-                    img = Image.open(page.image_path)
-
-                    # Apply rotation if needed
-                    if page.rotation != 0:
-                        img = img.rotate(-page.rotation, expand=True)
-
-                    # Convert to RGB if needed (for PDF)
-                    if img.mode != 'RGB':
-                        img = img.convert('RGB')
-
-                    images.append(img)
-
-                except Exception as e:
-                    print(f"Warning: Could not process page {page.page_id}: {e}")
-                    continue
-
-            if not images:
-                return False
-
-            # Save as PDF
-            images[0].save(
-                output_path,
-                "PDF",
-                save_all=True,
-                append_images=images[1:] if len(images) > 1 else [],
-                quality=self.export_settings.pdf_quality,
-                optimize=True
-            )
-
-            return True
-
-        except Exception as e:
-            print(f"Error creating PDF: {e}")
-            return False
-
-    def stop(self):
-        """Stop export process"""
-        self.should_stop = True
-
-
-class DocumentExportController(QObject):
-    """Controller for document export operations"""
-
-    # Signals
-    export_started = Signal()
-    export_progress = Signal(int, int, str)  # current, total, message
-    document_exported = Signal(str, str)  # document_name, output_path
-    export_error = Signal(str, str)  # document_name, error_message
-    export_completed = Signal(dict)  # export_summary
-    validation_failed = Signal(list)  # validation_errors
-
-    def __init__(self):
-        super().__init__()
-        self.export_worker = None
-        self.current_batch = None
-        self.current_schema = None
-        self.export_settings = None
-
-    def set_current_batch(self, batch: DocumentBatch):
-        """Set current document batch"""
-        self.current_batch = batch
-
-    def set_current_schema(self, schema: DynamicIndexSchema):
-        """Set current index schema"""
-        self.current_schema = schema
-
-    def set_export_settings(self, settings: ExportSettings):
-        """Set export settings"""
-        self.export_settings = settings
-
-    def validate_export_readiness(self, assignments: List[PageAssignment]) -> tuple[bool, List[str]]:
-        """Validate that export is ready to proceed"""
-        errors = []
-
-        if not self.current_batch:
-            errors.append("No document batch loaded")
-
-        if not self.current_schema:
-            errors.append("No index schema available")
-
-        if not assignments:
-            errors.append("No page assignments found")
-
-        if not self.export_settings:
-            # Set default export settings
-            from src.models.scan_profile import ExportSettings
-            self.export_settings = ExportSettings()
-
-        # Check that all assignments have valid pages
-        if self.current_batch and assignments:
-            for assignment in assignments:
-                valid_pages = 0
-                for page_id in assignment.page_ids:
-                    page = self.current_batch.get_page_by_id(page_id)
-                    if page and os.path.exists(page.image_path):
-                        valid_pages += 1
-
-                if valid_pages == 0:
-                    errors.append(f"Assignment {assignment.assignment_id[:8]} has no valid pages")
-
-        # Check schema validation
-        if self.current_schema and assignments:
-            for assignment in assignments:
-                field_errors = self.current_schema.validate_all_values(assignment.index_values)
-                if field_errors:
-                    errors.append(f"Assignment {assignment.assignment_id[:8]} has validation errors")
-
-        return len(errors) == 0, errors
-
-    def generate_export_groups(self, assignments: List[PageAssignment]) -> List[Dict]:
-        """Generate export groups from assignments"""
-        if not self.current_schema:
-            return []
-
-        groups = []
-
-        for assignment in assignments:
-            if not assignment.page_ids:  # Skip empty assignments
-                continue
-
-            # Update previews to ensure they're current
-            assignment.update_previews(self.current_schema)
-
-            group = {
-                'assignment_id': assignment.assignment_id,
-                'page_ids': assignment.page_ids.copy(),
-                'index_values': assignment.index_values.copy(),
-                'folder_path': assignment.folder_path_preview,
-                'filename': assignment.document_name_preview,
-                'page_count': len(assignment.page_ids)
-            }
-            groups.append(group)
-
-        return groups
-
-    def preview_export_structure(self, assignments: List[PageAssignment]) -> Dict:
-        """Generate preview of export structure"""
-        groups = self.generate_export_groups(assignments)
-
-        # Analyze folder structure
-        folders = set()
-        files_per_folder = {}
-        total_pages = 0
-
-        for group in groups:
-            folder_path = group['folder_path'] or "Root"
-            folders.add(folder_path)
-            files_per_folder[folder_path] = files_per_folder.get(folder_path, 0) + 1
-            total_pages += group['page_count']
-
-        return {
-            'document_groups': groups,
-            'total_documents': len(groups),
-            'total_pages': total_pages,
-            'folder_structure': {
-                'total_folders': len(folders),
-                'folder_paths': sorted(list(folders)),
-                'files_per_folder': files_per_folder,
-                'max_files_in_folder': max(files_per_folder.values()) if files_per_folder else 0
-            }
-        }
-
-    def start_export(self, assignments: List[PageAssignment], output_directory: str) -> bool:
-        """Start the export process"""
-        try:
-            # Validate readiness
-            is_ready, errors = self.validate_export_readiness(assignments)
-            if not is_ready:
-                self.validation_failed.emit(errors)
-                return False
-
-            # Check if already exporting
-            if self.export_worker and self.export_worker.isRunning():
-                return False
-
-            # Generate export groups
-            export_groups = self.generate_export_groups(assignments)
-            if not export_groups:
-                self.validation_failed.emit(["No valid document groups to export"])
-                return False
-
-            # Validate output directory
-            output_path = Path(output_directory)
-            if not output_path.exists():
-                try:
-                    output_path.mkdir(parents=True, exist_ok=True)
-                except Exception as e:
-                    self.validation_failed.emit([f"Cannot create output directory: {str(e)}"])
-                    return False
-
-            # Start export worker
-            self.export_worker = ExportWorker(
-                export_groups,
-                output_directory,
-                self.current_batch,
-                self.export_settings or ExportSettings()
-            )
-
-            # Connect signals
-            self.export_worker.export_progress.connect(self.export_progress.emit)
-            self.export_worker.document_exported.connect(self.document_exported.emit)
-            self.export_worker.export_error.connect(self.export_error.emit)
-            self.export_worker.export_completed.connect(self._on_export_completed)
-
-            self.export_worker.start()
-            self.export_started.emit()
-
-            return True
-
-        except Exception as e:
-            self.validation_failed.emit([f"Failed to start export: {str(e)}"])
-            return False
-
-    def stop_export(self):
-        """Stop current export process"""
-        if self.export_worker and self.export_worker.isRunning():
-            self.export_worker.stop()
-            self.export_worker.wait(5000)  # Wait up to 5 seconds
-
-    def _on_export_completed(self, successful_count: int, total_count: int):
-        """Handle export completion"""
-        summary = {
-            'successful_exports': successful_count,
-            'total_documents': total_count,
-            'failed_exports': total_count - successful_count,
-            'success_rate': (successful_count / max(total_count, 1)) * 100
-        }
-
-        self.export_completed.emit(summary)
-
-    def is_exporting(self) -> bool:
-        """Check if export is currently in progress"""
-        return self.export_worker is not None and self.export_worker.isRunning()
-
-    def get_export_summary_for_assignments(self, assignments: List[PageAssignment]) -> Dict:
-        """Get detailed export summary for given assignments"""
-        # Ensure we have export settings for validation
-        if not self.export_settings:
-            from src.models.scan_profile import ExportSettings
-            self.export_settings = ExportSettings()
-
-        groups = self.generate_export_groups(assignments)
-        preview = self.preview_export_structure(assignments)
-
-        # Calculate file sizes (estimated)
-        total_estimated_size = 0
-        for assignment in assignments:
-            # Estimate ~500KB per page for PDF
-            total_estimated_size += len(assignment.page_ids) * 500 * 1024
-
-        return {
-            'preview': preview,
-            'estimated_file_size': total_estimated_size,
-            'estimated_file_size_mb': total_estimated_size / (1024 * 1024),
-            'validation_ready': self.validate_export_readiness(assignments)[0],
-            'validation_errors': self.validate_export_readiness(assignments)[1]
-        }
+from src.models.document_batch import DocumentBatch
+from src.models.page_assignment import PageAssignment
+from src.models.dynamic_index_schema import DynamicIndexSchema
 
 
 class ExportFormat(Enum):
@@ -523,7 +164,7 @@ class MemoryManager:
         return total_bytes / (1024 * 1024)
 
 
-class EnhancedExportWorker(QThread):
+class ExportWorker(QThread):
     """Enhanced worker thread for document export operations"""
 
     export_progress = Signal(int, int, str)  # current, total, message
@@ -1008,4 +649,223 @@ class EnhancedExportWorker(QThread):
     def stop(self):
         """Stop export process"""
         self.should_stop = True
-    
+
+
+class DocumentExportController(QObject):
+    """Controller for document export operations"""
+
+    # Signals
+    export_started = Signal()
+    export_progress = Signal(int, int, str)  # current, total, message
+    document_exported = Signal(str, str)  # document_name, output_path
+    export_error = Signal(str, str)  # document_name, error_message
+    export_completed = Signal(dict)  # export_summary
+    validation_failed = Signal(list)  # validation_errors
+
+    def __init__(self):
+        super().__init__()
+        self.export_worker = None
+        self.current_batch = None
+        self.current_schema = None
+        self.export_settings = None
+
+    def set_current_batch(self, batch: DocumentBatch):
+        """Set current document batch"""
+        self.current_batch = batch
+
+    def set_current_schema(self, schema: DynamicIndexSchema):
+        """Set current index schema"""
+        self.current_schema = schema
+
+    def set_export_settings(self, settings: ExportSettings):
+        """Set export settings"""
+        self.export_settings = settings
+
+    def validate_export_readiness(self, assignments: List[PageAssignment]) -> tuple[bool, List[str]]:
+        """Validate that export is ready to proceed"""
+        errors = []
+
+        if not self.current_batch:
+            errors.append("No document batch loaded")
+
+        if not self.current_schema:
+            errors.append("No index schema available")
+
+        if not assignments:
+            errors.append("No page assignments found")
+
+        if not self.export_settings:
+            # Set default export settings
+            from src.models.scan_profile import ExportSettings
+            self.export_settings = ExportSettings()
+
+        # Check that all assignments have valid pages
+        if self.current_batch and assignments:
+            for assignment in assignments:
+                valid_pages = 0
+                for page_id in assignment.page_ids:
+                    page = self.current_batch.get_page_by_id(page_id)
+                    if page and os.path.exists(page.image_path):
+                        valid_pages += 1
+
+                if valid_pages == 0:
+                    errors.append(f"Assignment {assignment.assignment_id[:8]} has no valid pages")
+
+        # Check schema validation
+        if self.current_schema and assignments:
+            for assignment in assignments:
+                field_errors = self.current_schema.validate_all_values(assignment.index_values)
+                if field_errors:
+                    errors.append(f"Assignment {assignment.assignment_id[:8]} has validation errors")
+
+        return len(errors) == 0, errors
+
+    def generate_export_groups(self, assignments: List[PageAssignment]) -> List[Dict]:
+        """Generate export groups from assignments"""
+        if not self.current_schema:
+            return []
+
+        groups = []
+
+        for assignment in assignments:
+            if not assignment.page_ids:  # Skip empty assignments
+                continue
+
+            # Update previews to ensure they're current
+            assignment.update_previews(self.current_schema)
+
+            group = {
+                'assignment_id': assignment.assignment_id,
+                'page_ids': assignment.page_ids.copy(),
+                'index_values': assignment.index_values.copy(),
+                'folder_path': assignment.folder_path_preview,
+                'filename': assignment.document_name_preview,
+                'page_count': len(assignment.page_ids)
+            }
+            groups.append(group)
+
+        return groups
+
+    def preview_export_structure(self, assignments: List[PageAssignment]) -> Dict:
+        """Generate preview of export structure"""
+        groups = self.generate_export_groups(assignments)
+
+        # Analyze folder structure
+        folders = set()
+        files_per_folder = {}
+        total_pages = 0
+
+        for group in groups:
+            folder_path = group['folder_path'] or "Root"
+            folders.add(folder_path)
+            files_per_folder[folder_path] = files_per_folder.get(folder_path, 0) + 1
+            total_pages += group['page_count']
+
+        return {
+            'document_groups': groups,
+            'total_documents': len(groups),
+            'total_pages': total_pages,
+            'folder_structure': {
+                'total_folders': len(folders),
+                'folder_paths': sorted(list(folders)),
+                'files_per_folder': files_per_folder,
+                'max_files_in_folder': max(files_per_folder.values()) if files_per_folder else 0
+            }
+        }
+
+    def start_export(self, assignments: List[PageAssignment], output_directory: str) -> bool:
+        """Start the export process"""
+        try:
+            # Validate readiness
+            is_ready, errors = self.validate_export_readiness(assignments)
+            if not is_ready:
+                self.validation_failed.emit(errors)
+                return False
+
+            # Check if already exporting
+            if self.export_worker and self.export_worker.isRunning():
+                return False
+
+            # Generate export groups
+            export_groups = self.generate_export_groups(assignments)
+            if not export_groups:
+                self.validation_failed.emit(["No valid document groups to export"])
+                return False
+
+            # Validate output directory
+            output_path = Path(output_directory)
+            if not output_path.exists():
+                try:
+                    output_path.mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    self.validation_failed.emit([f"Cannot create output directory: {str(e)}"])
+                    return False
+
+            # Start export worker
+            self.export_worker = ExportWorker(
+                export_groups,
+                output_directory,
+                self.current_batch,
+                self.export_settings or ExportSettings()
+            )
+
+            # Connect signals
+            self.export_worker.export_progress.connect(self.export_progress.emit)
+            self.export_worker.document_exported.connect(self.document_exported.emit)
+            self.export_worker.export_error.connect(self.export_error.emit)
+            self.export_worker.export_completed.connect(self._on_export_completed)
+
+            self.export_worker.start()
+            self.export_started.emit()
+
+            return True
+
+        except Exception as e:
+            self.validation_failed.emit([f"Failed to start export: {str(e)}"])
+            return False
+
+    def stop_export(self):
+        """Stop current export process"""
+        if self.export_worker and self.export_worker.isRunning():
+            self.export_worker.stop()
+            self.export_worker.wait(5000)  # Wait up to 5 seconds
+
+    def _on_export_completed(self, successful_count: int, total_count: int):
+        """Handle export completion"""
+        summary = {
+            'successful_exports': successful_count,
+            'total_documents': total_count,
+            'failed_exports': total_count - successful_count,
+            'success_rate': (successful_count / max(total_count, 1)) * 100
+        }
+
+        self.export_completed.emit(summary)
+
+    def is_exporting(self) -> bool:
+        """Check if export is currently in progress"""
+        return self.export_worker is not None and self.export_worker.isRunning()
+
+    def get_export_summary_for_assignments(self, assignments: List[PageAssignment]) -> Dict:
+        """Get detailed export summary for given assignments"""
+        # Ensure we have export settings for validation
+        if not self.export_settings:
+            from src.models.scan_profile import ExportSettings
+            self.export_settings = ExportSettings()
+
+        groups = self.generate_export_groups(assignments)
+        preview = self.preview_export_structure(assignments)
+
+        # Calculate file sizes (estimated)
+        total_estimated_size = 0
+        for assignment in assignments:
+            # Estimate ~500KB per page for PDF
+            total_estimated_size += len(assignment.page_ids) * 500 * 1024
+
+        return {
+            'preview': preview,
+            'estimated_file_size': total_estimated_size,
+            'estimated_file_size_mb': total_estimated_size / (1024 * 1024),
+            'validation_ready': self.validate_export_readiness(assignments)[0],
+            'validation_errors': self.validate_export_readiness(assignments)[1]
+        }
+

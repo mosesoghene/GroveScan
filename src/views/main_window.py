@@ -6,6 +6,8 @@ from PySide6.QtGui import QAction, QKeySequence
 
 # Import our custom widgets and controllers
 from src.controllers.app_controller import ApplicationController
+from .enhanced_export_dialog import EnhancedExportPreviewDialog
+from .export_dialog import ExportProgressDialog
 from .workflow_widget import WorkflowStatusWidget
 from .dynamic_index_editor import DynamicIndexEditor
 from .document_grid_view import DocumentGridView
@@ -13,7 +15,7 @@ from .page_assignment_view import PageAssignmentView
 from .scanner_control_view import ScannerControlView
 from .profile_dialog import ProfileManagerDialog, QuickProfileDialog
 from src.models.scan_profile import ScanProfile, ExportSettings
-from .export_dialog import ExportPreviewDialog, ExportProgressDialog
+
 
 
 class MainWindow(QMainWindow):
@@ -680,7 +682,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _export_documents(self):
-        """Export the organized documents"""
+        """Export the organized documents with enhanced template support"""
         can_export, message = self.app_controller.can_proceed_to_export()
 
         if not can_export:
@@ -689,7 +691,10 @@ class MainWindow(QMainWindow):
 
         # Get export summary from controller
         assignments = self.app_controller.page_assignment_controller.get_all_assignments()
-        export_controller = self.app_controller.get_export_controller()
+
+        # Use enhanced export controller
+        from src.controllers.export_controller import DocumentExportController
+        export_controller = DocumentExportController()
 
         # Set up export controller
         export_controller.set_current_batch(self.app_controller.document_controller.current_batch)
@@ -699,10 +704,77 @@ class MainWindow(QMainWindow):
 
         export_summary = export_controller.get_export_summary_for_assignments(assignments)
 
-        # Show export preview dialog
-        preview_dialog = ExportPreviewDialog(export_summary, self)
-        preview_dialog.export_confirmed.connect(self._start_export_with_settings)
+        # Show enhanced export preview dialog
+        preview_dialog = EnhancedExportPreviewDialog(export_summary, self)
+        preview_dialog.export_confirmed.connect(self._start_enhanced_export)
         preview_dialog.exec()
+
+    def _start_enhanced_export(self, output_dir: str, template):
+        """Start export with enhanced template support"""
+        try:
+            # Create enhanced export controller
+            from src.controllers.export_controller import DocumentExportController, ExportWorker
+
+            assignments = self.app_controller.page_assignment_controller.get_all_assignments()
+            batch = self.app_controller.document_controller.current_batch
+
+            # Generate export groups
+            export_controller = DocumentExportController()
+            export_controller.set_current_batch(batch)
+            export_controller.set_current_schema(
+                self.app_controller.profile_controller.current_profile.schema
+            )
+
+            export_groups = export_controller.generate_export_groups(assignments)
+
+            if not export_groups:
+                QMessageBox.warning(self, "Export Error", "No valid document groups to export.")
+                return
+
+            # Show progress dialog
+            total_docs = len(export_groups)
+            progress_dialog = ExportProgressDialog(total_docs, self)
+
+            # Create enhanced export worker
+            export_worker = ExportWorker(
+                export_groups=export_groups,
+                template=template,
+                output_dir=output_dir,
+                batch=batch
+            )
+
+            # Connect signals
+            export_worker.export_progress.connect(progress_dialog.update_progress)
+            export_worker.document_exported.connect(progress_dialog.document_exported)
+            export_worker.export_error.connect(progress_dialog.export_error)
+            export_worker.export_completed.connect(progress_dialog.export_completed)
+            export_worker.export_completed.connect(self._on_enhanced_export_completed)
+            export_worker.memory_warning.connect(self._on_export_memory_warning)
+
+            # Connect cancel signal
+            progress_dialog.export_cancelled.connect(export_worker.stop)
+
+            # Start export
+            export_worker.start()
+            progress_dialog.exec()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"An error occurred during export:\n{str(e)}")
+
+    def _on_enhanced_export_completed(self, success_count: int, total_count: int):
+        """Handle enhanced export completion"""
+        if success_count == total_count:
+            self.status_bar.showMessage(f"Export completed successfully! {success_count} documents exported.", 5000)
+        else:
+            failed_count = total_count - success_count
+            self.status_bar.showMessage(
+                f"Export completed with issues. {success_count} successful, {failed_count} failed.", 5000)
+
+    def _on_export_memory_warning(self, warning_message: str):
+        """Handle export memory warnings"""
+        print(f"Export memory warning: {warning_message}")
+        self.status_bar.showMessage(f"Memory warning: {warning_message}", 3000)
+
 
     def _start_export_with_settings(self, output_dir: str, export_settings: dict):
         """Start export with specified settings"""
