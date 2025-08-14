@@ -210,3 +210,7 @@ __marimo__/
 # Keep tests local
 #  If you want to keep your tests local, you can uncomment the following line.
 tests/
+export_templates/
+exports/
+temp/
+profiles/
