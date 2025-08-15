@@ -6,6 +6,8 @@ from ..models.scan_profile import ScannerSettings
 from ..models.scanner_interface import ScannerDevice
 from typing import List
 
+from ..utils.help_system import HelpManager
+
 
 class ScannerControlView(QWidget):
     """Scanner control panel widget"""
@@ -21,6 +23,8 @@ class ScannerControlView(QWidget):
         self.is_scanning = False
         self._setup_ui()
         self._connect_signals()
+        self.help_manager = HelpManager()
+        self._setup_tooltips()
 
     def _setup_ui(self):
         """Setup the user interface"""
@@ -114,6 +118,21 @@ class ScannerControlView(QWidget):
 
         # Enable quality control only for JPEG
         self.format_combo.currentTextChanged.connect(self._on_format_changed)
+
+    def _setup_tooltips(self):
+        """Setup tooltips for scanner controls"""
+        self.device_combo.setToolTip(
+            "Select your scanner device. Click 'Refresh Devices' if your scanner isn't listed.")
+        self.refresh_devices_btn.setToolTip("Search for connected scanner devices")
+
+        self.resolution_combo.setToolTip(self.help_manager.get_tooltip("scan_resolution"))
+        self.color_mode_combo.setToolTip(self.help_manager.get_tooltip("scan_color_mode"))
+        self.format_combo.setToolTip(self.help_manager.get_tooltip("scan_format"))
+        self.quality_spin.setToolTip("JPEG compression quality (higher = better quality, larger files)")
+
+        self.page_count_spin.setToolTip(self.help_manager.get_tooltip("page_count"))
+        self.scan_btn.setToolTip("Start scanning the specified number of pages")
+        self.stop_btn.setToolTip("Stop the current scanning operation")
 
     def _connect_signals(self):
         """Connect internal signals"""

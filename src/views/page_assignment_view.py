@@ -10,6 +10,8 @@ from src.models.dynamic_index_schema import DynamicIndexSchema
 from src.models.document_batch import DocumentBatch
 from typing import List, Dict, Optional
 
+from src.utils.help_system import HelpManager
+
 
 class AssignmentWidget(QFrame):
     """Widget for displaying a single page assignment"""
@@ -162,6 +164,8 @@ class PageAssignmentView(QWidget):
         self.assignment_widgets = {}  # assignment_id -> AssignmentWidget
         self._setup_ui()
         self._connect_signals()
+        self.help_manager = HelpManager()
+        self._setup_tooltips()
 
     def _setup_ui(self):
         """Setup the user interface"""
@@ -185,6 +189,20 @@ class PageAssignmentView(QWidget):
         # Set initial sizes (40%, 30%, 30%)
         splitter.setSizes([400, 300, 300])
         layout.addWidget(splitter)
+
+    def _setup_tooltips(self):
+        """Setup tooltips for page assignment controls"""
+        self.assign_btn.setToolTip(self.help_manager.get_tooltip("assign_pages"))
+        self.clear_values_btn.setToolTip("Clear all field values to start over")
+
+        self.pages_per_doc_spin.setToolTip(self.help_manager.get_tooltip("pages_per_doc"))
+        self.auto_assign_btn.setToolTip(self.help_manager.get_tooltip("auto_assign"))
+
+        self.validate_all_btn.setToolTip("Check all assignments for errors and missing required fields")
+        self.clear_all_btn.setToolTip("Remove all page assignments (cannot be undone)")
+
+        self.preview_tree.setToolTip("Preview of the folder structure and documents that will be created")
+
 
     def _create_assignment_editor_panel(self) -> QWidget:
         """Create assignment editing panel"""

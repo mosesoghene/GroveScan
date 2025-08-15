@@ -17,6 +17,8 @@ from .scanner_control_view import ScannerControlView
 from .profile_dialog import ProfileManagerDialog, QuickProfileDialog
 from src.models.scan_profile import ScanProfile, ExportSettings
 from ..utils.error_handling import ErrorHandler
+from ..utils.help_hints import HelpHintsManager
+from ..utils.help_system import HelpManager, HelpDialog
 from ..utils.settings_manager import SettingsManager, SettingsCategory
 
 
@@ -44,6 +46,12 @@ class MainWindow(QMainWindow):
         # Settings management
         self.settings_manager = SettingsManager()
         self.settings_manager.settings_changed.connect(self._on_settings_changed)
+
+        self.help_manager = HelpManager()
+        self.help_dialog = None
+
+        self.help_hints_manager = HelpHintsManager()
+        self.current_hint_widget = None
 
         self._setup_ui()
         self._connect_signals()
@@ -314,6 +322,34 @@ class MainWindow(QMainWindow):
         # Help menu
         help_menu = menubar.addMenu("Help")
 
+        help_contents_action = QAction("Help Contents", self)
+        help_contents_action.setShortcut(QKeySequence.StandardKey.HelpContents)
+        help_contents_action.triggered.connect(self._show_help)
+        help_menu.addAction(help_contents_action)
+
+        quick_start_action = QAction("Quick Start Guide", self)
+        quick_start_action.triggered.connect(lambda: self._show_help("quick_start"))
+        help_menu.addAction(quick_start_action)
+
+        help_menu.addSeparator()
+
+        context_help_action = QAction("Context Help", self)
+        context_help_action.setShortcut(QKeySequence("F1"))
+        context_help_action.triggered.connect(self._show_context_help)
+        help_menu.addAction(context_help_action)
+
+        help_menu.addSeparator()
+
+        troubleshooting_action = QAction("Troubleshooting", self)
+        troubleshooting_action.triggered.connect(lambda: self._show_help("troubleshooting_common"))
+        help_menu.addAction(troubleshooting_action)
+
+        help_menu.addSeparator()
+
+        about_action = QAction("About Dynamic Scanner", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
         about_action = QAction("About Dynamic Scanner", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
@@ -336,6 +372,44 @@ class MainWindow(QMainWindow):
 
         # Update status bar
         self._update_status_bar(state_info)
+
+        # Show contextual hints
+        self._check_and_show_hints(state_info)
+
+    def _check_and_show_hints(self, state_info: dict):
+        """Check and show contextual help hints"""
+        # Add scanner connection status to context
+        context = state_info.copy()
+        context["scanner_connected"] = len(self.app_controller.scan_controller.scanner_interface.discover_devices()) > 0
+
+        # Check for hints to show
+        hint_priorities = ["first_profile", "after_profile", "first_scan", "pages_scanned", "assignments_ready"]
+
+        for hint_id in hint_priorities:
+            if self.help_hints_manager.should_show_hint(hint_id, context):
+                self._show_hint(hint_id)
+                break  # Show only one hint at a time
+
+    def _show_hint(self, hint_id: str):
+        """Show a help hint"""
+        # Remove existing hint
+        if self.current_hint_widget:
+            self.current_hint_widget.hide()
+            self.current_hint_widget = None
+
+        # Create and show new hint
+        hint_widget = self.help_hints_manager.create_hint_widget(hint_id, self)
+        if hint_widget:
+            self.current_hint_widget = hint_widget
+
+            # Position hint at top of window
+            hint_widget.setParent(self)
+            hint_widget.setGeometry(10, 80, self.width() - 20, 80)
+            hint_widget.show_animated()
+
+            # Auto-dismiss after 10 seconds
+            QTimer.singleShot(10000, lambda: hint_widget._dismiss())
+
 
     def _on_workflow_step_completed(self, step_name: str):
         """Handle workflow step completion"""
@@ -485,17 +559,17 @@ class MainWindow(QMainWindow):
         self.tab_widget.setTabEnabled(2, has_profile and has_batch)
 
     def _update_status_bar(self, state_info: dict):
-        """Update status bar with current state"""
+        """Update status bar with current state and help hints"""
         if state_info.get('ready_to_export', False):
-            self.status_bar.showMessage("Ready to export documents")
+            self.status_bar.showMessage("Ready to export documents • Press F1 for help")
         elif state_info.get('has_assignments', False):
-            self.status_bar.showMessage("Pages assigned - validate and export")
+            self.status_bar.showMessage("Pages assigned - validate and export • F1: Help")
         elif state_info.get('has_batch', False):
-            self.status_bar.showMessage("Documents scanned - assign pages to index values")
+            self.status_bar.showMessage("Documents scanned - assign pages to index values • F1: Help")
         elif state_info.get('has_profile', False):
-            self.status_bar.showMessage("Profile loaded - start scanning documents")
+            self.status_bar.showMessage("Profile loaded - start scanning documents • F1: Help")
         else:
-            self.status_bar.showMessage("Create or load a profile to begin")
+            self.status_bar.showMessage("Create or load a profile to begin • F1: Help")
 
     # Menu action handlers
     def _create_new_profile(self):
@@ -943,6 +1017,39 @@ class MainWindow(QMainWindow):
         """Handle settings being applied"""
         self.status_bar.showMessage("Settings applied successfully", 3000)
 
+    def _show_help(self, topic_id: str = None):
+        """Show help dialog"""
+        if self.help_dialog is None:
+            self.help_dialog = HelpDialog(self.help_manager, topic_id, self)
+        else:
+            if topic_id:
+                self.help_dialog._show_topic(topic_id)
+
+        self.help_dialog.show()
+        self.help_dialog.raise_()
+        self.help_dialog.activateWindow()
+
+    def _show_context_help(self):
+        """Show context-sensitive help based on current tab"""
+        current_tab = self.tab_widget.currentIndex()
+
+        help_topics = {
+            0: "profiles_overview",  # Profile Editor
+            1: "scanning_tips",  # Scanned Pages
+            2: "page_assignment_guide"  # Page Assignment
+        }
+
+        topic_id = help_topics.get(current_tab, "quick_start")
+        self._show_help(topic_id)
+
+    def keyPressEvent(self, event):
+        """Handle global key presses"""
+        if event.key() == Qt.Key.Key_F1:
+            self._show_context_help()
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
 
     def _show_about(self):
         """Show about dialog"""

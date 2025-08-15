@@ -336,9 +336,14 @@ class EnhancedExportPreviewDialog(QDialog):
         # Dialog buttons
         button_layout = QHBoxLayout()
 
+        # Help button
+        help_btn = QPushButton("❓ Help")
+        help_btn.clicked.connect(self._show_export_help)
+        button_layout.addWidget(help_btn)
+
         # Resume button (if applicable)
         self.resume_btn = QPushButton("Resume Previous Export")
-        self.resume_btn.setVisible(False)  # Will be shown if resume state found
+        self.resume_btn.setVisible(False)
         self.resume_btn.clicked.connect(self._resume_export)
         button_layout.addWidget(self.resume_btn)
 
@@ -349,6 +354,7 @@ class EnhancedExportPreviewDialog(QDialog):
         button_layout.addWidget(self.cancel_btn)
 
         self.export_btn = QPushButton("Start Export")
+
         self.export_btn.setStyleSheet("""
             QPushButton {
                 background-color: #4caf50;
@@ -370,6 +376,13 @@ class EnhancedExportPreviewDialog(QDialog):
 
         # Load templates and set recommended one
         self._load_templates()
+
+    def _show_export_help(self):
+        """Show export-related help"""
+        from src.utils.help_system import HelpManager, HelpDialog
+        help_manager = HelpManager()
+        help_dialog = HelpDialog(help_manager, "export_guide", self)
+        help_dialog.exec()
 
     def _create_template_tab(self) -> QWidget:
         """Create template selection tab"""

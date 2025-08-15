@@ -11,6 +11,8 @@ from src.models.scan_profile import ScanProfile, ScannerSettings, ExportSettings
 from .index_field_widget import IndexFieldWidget, FieldListWidget
 from typing import List, Dict, Optional
 
+from ..utils.help_system import HelpManager
+
 
 class DynamicIndexEditor(QWidget):
     """Main editor for dynamic index schemas"""
@@ -26,6 +28,8 @@ class DynamicIndexEditor(QWidget):
         self.current_profile = None
         self._setup_ui()
         self._connect_signals()
+        self.help_manager = HelpManager()
+        self._setup_tooltips()
 
     def _setup_ui(self):
         """Setup the user interface"""
@@ -553,6 +557,13 @@ class DynamicIndexEditor(QWidget):
             values[field_name] = editor.text()
         return values
 
+    def _setup_tooltips(self):
+        """Setup tooltips for UI elements"""
+        self.add_field_btn.setToolTip(self.help_manager.get_tooltip("field_name"))
+        self.separator_edit.setToolTip("Character used to separate filename components (default: _)")
+        self.validate_btn.setToolTip("Check all field values for errors and conflicts")
+        self.clear_values_btn.setToolTip("Clear all field values to start fresh")
+
 
 class FieldEditorDialog(QDialog):
     """Dialog for editing field properties"""
@@ -565,8 +576,20 @@ class FieldEditorDialog(QDialog):
         self.resize(400, 500)
         self._setup_ui()
 
+        self.help_manager = HelpManager()
+        self._setup_field_help()
+
         if field:
             self._load_field_data(field)
+
+    def _setup_field_help(self):
+        """Setup help tooltips for field editor"""
+        self.name_edit.setToolTip(self.help_manager.get_tooltip("field_name"))
+        self.type_combo.setToolTip(self.help_manager.get_tooltip("field_type"))
+        self.default_edit.setToolTip(self.help_manager.get_tooltip("field_default"))
+        self.required_check.setToolTip(self.help_manager.get_tooltip("field_required"))
+        self.pattern_edit.setToolTip("Regular expression pattern to validate field values (optional)")
+        self.allowed_values_edit.setToolTip("List of allowed values, one per line (optional)")
 
     def _setup_ui(self):
         """Setup the dialog UI"""
@@ -628,6 +651,22 @@ class FieldEditorDialog(QDialog):
 
         layout.addWidget(validation_group)
 
+        help_btn = QPushButton("❓ Field Help")
+        help_btn.clicked.connect(self._show_field_help)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+
+        # Create a layout for the buttons
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(help_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(button_box)
+
+        # Add button layout to main layout instead of button_box directly
+        layout.addLayout(button_layout)
+
         # Dialog buttons
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -635,6 +674,12 @@ class FieldEditorDialog(QDialog):
         button_box.accepted.connect(self._validate_and_accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
+
+    def _show_field_help(self):
+        """Show field-specific help"""
+        from src.utils.help_system import HelpDialog
+        help_dialog = HelpDialog(self.help_manager, "profiles_overview", self)
+        help_dialog.exec()
 
     def _load_field_data(self, field: IndexField):
         """Load existing field data into dialog"""
@@ -703,3 +748,4 @@ class FieldEditorDialog(QDialog):
             is_required=self.required_check.isChecked(),
             validation_rules=validation_rules
         )
+
