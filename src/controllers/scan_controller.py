@@ -66,8 +66,23 @@ class ScanController(QObject):
 
     def __init__(self):
         super().__init__()
-        # For now, use mock scanner. In production, detect platform and use the appropriate scanner
-        self.scanner_interface = MockScannerInterface()
+
+        from src.models.scanner_interface import (SCANNER_BACKEND, BACKEND_INFO,
+                                                WindowsNativeScannerInterface,
+                                                SANECommandLineScannerInterface,
+                                                MockScannerInterface)
+
+        if SCANNER_BACKEND == "sane-cli":
+            self.scanner_interface = SANECommandLineScannerInterface()
+            print("✓ Using SANE command-line interface")
+        elif SCANNER_BACKEND == "windows-native":
+            self.scanner_interface = WindowsNativeScannerInterface()
+            print("✓ Using Windows native scanner detection")
+        else:
+            self.scanner_interface = MockScannerInterface()
+            print(f"ℹ Using mock scanner ({BACKEND_INFO})")
+
+
         self.current_device = None
         self.current_batch = None
         self.scan_worker = None

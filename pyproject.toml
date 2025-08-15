@@ -8,5 +8,7 @@ dependencies = [
     "pillow>=11.3.0",
     "psutil>=7.0.0",
     "pyside6>=6.9.1",
+    "pywin32>=311",
     "reportlab>=4.4.3",
+    "twain-wia-sane-scanner>=2.0.2",
 ]
