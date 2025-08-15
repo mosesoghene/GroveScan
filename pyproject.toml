@@ -7,6 +7,7 @@ dependencies = [
     "coverage>=7.10.3",
     "pillow>=11.3.0",
     "psutil>=7.0.0",
+    "pyinsane2>=2.0.13",
     "pyside6>=6.9.1",
     "pywin32>=311",
     "reportlab>=4.4.3",
