@@ -34,26 +34,43 @@ class ScannedPage:
         except Exception:
             pass
 
-    def generate_thumbnail(self, size: tuple = (150, 200)) -> str:
-        """Generate thumbnail and return path"""
+    def generate_thumbnail(self, size: tuple = (150, 200), use_cache: bool = True) -> str:
+        """Generate thumbnail and return path with caching optimization"""
         if not os.path.exists(self.image_path):
             return ""
 
+        # Check if thumbnail already exists and is newer than source
+        if self.thumbnail_path and os.path.exists(self.thumbnail_path) and use_cache:
+            source_mtime = os.path.getmtime(self.image_path)
+            thumb_mtime = os.path.getmtime(self.thumbnail_path)
+            if thumb_mtime > source_mtime:
+                return self.thumbnail_path
+
         try:
+            from PIL import Image, ImageOps
+
+            # Use optimized thumbnail generation
             with Image.open(self.image_path) as img:
                 # Apply current rotation
                 if self.rotation != 0:
                     img = img.rotate(-self.rotation, expand=True)
 
-                # Create thumbnail
+                # Use draft mode for faster processing of large images
+                img.draft('RGB', size)
+
+                # Create thumbnail using optimized method
                 img.thumbnail(size, Image.Resampling.LANCZOS)
 
-                # Save thumbnail
+                # Optimize for size while maintaining quality
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    img = img.convert('RGB')
+
+                # Save thumbnail with optimization
                 temp_dir = tempfile.gettempdir()
-                thumbnail_filename = f"thumb_{self.page_id}.png"
+                thumbnail_filename = f"thumb_{self.page_id}.jpg"  # Use JPEG for smaller size
                 thumbnail_path = os.path.join(temp_dir, thumbnail_filename)
 
-                img.save(thumbnail_path, "PNG")
+                img.save(thumbnail_path, "JPEG", quality=85, optimize=True)
                 self.thumbnail_path = thumbnail_path
                 return thumbnail_path
 
@@ -63,6 +80,14 @@ class ScannedPage:
         except OSError as e:
             print(f"Disk error creating thumbnail for {self.page_id}: {e}")
             return ""
+        except MemoryError:
+            print(f"Out of memory creating thumbnail for {self.page_id}")
+            # Try with smaller size
+            try:
+                smaller_size = (size[0] // 2, size[1] // 2)
+                return self.generate_thumbnail(smaller_size, use_cache=False)
+            except:
+                return ""
         except Exception as e:
             print(f"Error generating thumbnail for {self.page_id}: {e}")
             return ""

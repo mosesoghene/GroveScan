@@ -1,12 +1,14 @@
 from PySide6.QtWidgets import (QWidget, QGridLayout, QScrollArea, QLabel,
                                QPushButton, QVBoxLayout, QHBoxLayout, QFrame,
                                QMenu, QSizePolicy)
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, QSize, Signal, QTimer, QThread
 from PySide6.QtGui import QPixmap, QAction, QContextMenuEvent
 from src.models.scanned_page import ScannedPage
 from src.models.document_batch import DocumentBatch
 from typing import List, Set
 import os
+
+from src.utils.performance_monitor import PerformanceMonitor, MemoryOptimizer
 
 
 class PageThumbnail(QFrame):
@@ -131,6 +133,20 @@ class DocumentGridView(QWidget):
         self.selected_pages = set()  # Set of selected page_ids
         self._setup_ui()
 
+        # optimization settings
+        self.performance_monitor = PerformanceMonitor()
+        self.memory_optimizer = MemoryOptimizer(self.performance_monitor)
+        self.load_timer = QTimer()
+        self.load_timer.setSingleShot(True)
+        self.load_timer.timeout.connect(self._delayed_load_batch)
+        self.pending_batch = None
+
+        self.batch_load_size = 20  # Load thumbnails in batches
+        self.visible_range_buffer = 5  # Extra thumbnails to keep around visible area
+
+        # Connect performance monitoring
+        self.performance_monitor.memory_warning.connect(self._handle_memory_warning)
+
     def _setup_ui(self):
         """Setup the user interface"""
         layout = QVBoxLayout(self)
@@ -174,12 +190,121 @@ class DocumentGridView(QWidget):
         layout.addWidget(self.status_label)
 
     def load_batch(self, batch: DocumentBatch):
-        """Load a document batch for display"""
-        self.current_batch = batch
-        self.selected_pages.clear()
+        """Load a document batch for display with performance optimization"""
+        if batch is None:
+            self._clear_grid()
+            return
+
+        with self.performance_monitor.measure_operation("load_batch"):
+            self.current_batch = batch
+            self.selected_pages.clear()
+
+            # For large batches, use delayed loading
+            if batch and len(batch.scanned_pages) > 50:
+                self.pending_batch = batch
+                self.load_timer.start(100)  # Delay loading to avoid UI freeze
+            else:
+                self._immediate_load_batch(batch)
+
+            self._update_batch_info()
+
+    def _delayed_load_batch(self):
+        """Load batch with delay to prevent UI freezing"""
+        if self.pending_batch:
+            self._immediate_load_batch(self.pending_batch)
+            self.pending_batch = None
+
+    def _immediate_load_batch(self, batch: DocumentBatch):
+        """Immediate batch loading with memory optimization"""
         self._clear_grid()
-        self._populate_grid()
-        self._update_batch_info()
+
+        # Load thumbnails in batches for large document sets
+        total_pages = len(batch.scanned_pages)
+
+        if total_pages > self.batch_load_size:
+            self._load_batch_progressive(batch)
+        else:
+            self._populate_grid()
+
+    def _load_batch_progressive(self, batch: DocumentBatch):
+        """Load large batches progressively"""
+        self.setUpdatesEnabled(False)  # Prevent repaints during loading
+
+        try:
+            # Load first batch immediately
+            for i, page in enumerate(batch.scanned_pages[:self.batch_load_size]):
+                self._create_and_add_thumbnail(page, i)
+
+            # Schedule remaining pages for background loading
+            if len(batch.scanned_pages) > self.batch_load_size:
+                self._schedule_background_loading(batch.scanned_pages[self.batch_load_size:])
+
+        finally:
+            self.setUpdatesEnabled(True)
+
+    def _schedule_background_loading(self, remaining_pages: List):
+        """Schedule background loading of remaining thumbnails"""
+        self.background_loader = BackgroundThumbnailLoader(remaining_pages, self)
+        self.background_loader.thumbnail_ready.connect(self._add_background_thumbnail)
+        self.background_loader.start()
+
+    def _create_and_add_thumbnail(self, page, position_hint: int = -1):
+        """Create and add thumbnail with optimization"""
+        # Check cache first
+        cached_thumbnail = self.memory_optimizer.get_cached_image(page.page_id, 'thumbnails')
+
+        if cached_thumbnail:
+            thumbnail = cached_thumbnail
+        else:
+            thumbnail = PageThumbnail(page)
+            # Cache the thumbnail
+            self.memory_optimizer.cache_image(page.page_id, thumbnail, 'thumbnails')
+
+        thumbnail.clicked.connect(self._on_page_clicked)
+        thumbnail.double_clicked.connect(self._on_page_double_clicked)
+        thumbnail.context_menu_requested.connect(self._on_context_menu_requested)
+
+        self.thumbnails[page.page_id] = thumbnail
+
+        if position_hint >= 0:
+            row = position_hint // 4
+            col = position_hint % 4
+        else:
+            page_count = len(self.thumbnails)
+            row = (page_count - 1) // 4
+            col = (page_count - 1) % 4
+
+        self.grid_layout.addWidget(thumbnail, row, col)
+
+    def _handle_memory_warning(self, memory_mb: float):
+        """Handle memory usage warnings"""
+        print(f"Memory warning: {memory_mb:.1f} MB")
+
+        # Clear thumbnail cache if memory usage is high
+        if memory_mb > 1024:  # 1GB threshold
+            self.memory_optimizer.clear_cache('thumbnails')
+
+            # Also clear non-visible thumbnails
+            self._cleanup_non_visible_thumbnails()
+
+    def _cleanup_non_visible_thumbnails(self):
+        """Remove thumbnails that are not currently visible"""
+        if not self.current_batch:
+            return
+
+        visible_rect = self.scroll_area.viewport().rect()
+
+        # Find thumbnails outside visible area
+        to_remove = []
+        for page_id, thumbnail in self.thumbnails.items():
+            if not thumbnail.geometry().intersects(visible_rect):
+                to_remove.append(page_id)
+
+        # Remove excess thumbnails (keep some buffer)
+        buffer_count = min(20, len(to_remove) // 2)
+        for page_id in to_remove[buffer_count:]:
+            thumbnail = self.thumbnails.pop(page_id)
+            thumbnail.setParent(None)
 
     def add_page(self, page: ScannedPage):
         """Add a single page to the current batch"""
@@ -380,3 +505,49 @@ class DocumentGridView(QWidget):
             page = self.current_batch.get_page_by_id(page_id)
             if page:
                 self.thumbnails[page_id].update_page_data(page)
+
+
+class BackgroundThumbnailLoader(QThread):
+    """Background thread for loading thumbnails"""
+
+    thumbnail_ready = Signal(object, int)  # page, position
+    batch_completed = Signal()
+
+    def __init__(self, pages: List, parent_view):
+        super().__init__()
+        self.pages = pages
+        self.parent_view = parent_view
+        self.should_stop = False
+
+    def run(self):
+        """Load thumbnails in background"""
+        for i, page in enumerate(self.pages):
+            if self.should_stop:
+                break
+
+            try:
+                # Generate thumbnail if needed
+                if not page.thumbnail_path or not os.path.exists(page.thumbnail_path):
+                    page.generate_thumbnail()
+
+                # Emit signal for main thread to add thumbnail
+                self.thumbnail_ready.emit(page, i + self.parent_view.batch_load_size)
+
+                # Small delay to prevent overwhelming the main thread
+                self.msleep(50)
+
+            except Exception as e:
+                print(f"Error loading thumbnail for {page.page_id}: {e}")
+                continue
+
+        self.batch_completed.emit()
+
+    def stop(self):
+        """Stop background loading"""
+        self.should_stop = True
+
+
+# Add this method to DocumentGridView:
+def _add_background_thumbnail(self, page, position: int):
+    """Add thumbnail loaded in background"""
+    QTimer.singleShot(0, lambda: self._create_and_add_thumbnail(page, position))

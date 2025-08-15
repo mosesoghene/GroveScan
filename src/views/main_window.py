@@ -19,6 +19,7 @@ from src.models.scan_profile import ScanProfile, ExportSettings
 from ..utils.error_handling import ErrorHandler
 from ..utils.help_hints import HelpHintsManager
 from ..utils.help_system import HelpManager, HelpDialog
+from ..utils.performance_monitor import PerformanceMonitor, MemoryOptimizer
 from ..utils.settings_manager import SettingsManager, SettingsCategory
 
 
@@ -52,6 +53,13 @@ class MainWindow(QMainWindow):
 
         self.help_hints_manager = HelpHintsManager()
         self.current_hint_widget = None
+
+        self.performance_monitor = PerformanceMonitor()
+        self.memory_optimizer = MemoryOptimizer(self.performance_monitor)
+
+        # Connect performance monitoring
+        self.performance_monitor.memory_warning.connect(self._handle_memory_warning)
+        self.performance_monitor.metrics_updated.connect(self._update_performance_status)
 
         self._setup_ui()
         self._connect_signals()
@@ -1080,3 +1088,31 @@ class MainWindow(QMainWindow):
 
         self._save_window_state()
         event.accept()
+
+    def _handle_memory_warning(self, memory_mb: float):
+        """Handle memory usage warnings"""
+        if memory_mb > 1024:  # 1GB threshold
+            # Clear various caches
+            if hasattr(self, 'document_grid') and self.document_grid:
+                self.document_grid.memory_optimizer.clear_cache()
+
+            # Force garbage collection
+            freed_mb = self.performance_monitor.force_garbage_collection()
+
+            if freed_mb > 50:  # If we freed significant memory
+                self.status_bar.showMessage(f"Freed {freed_mb:.1f} MB of memory", 3000)
+            else:
+                self.status_bar.showMessage(
+                    f"High memory usage: {memory_mb:.1f} MB - consider processing smaller batches", 5000)
+
+    def _update_performance_status(self, metrics):
+        """Update performance information in status bar (optional)"""
+        # Only show performance info if in debug mode
+        if hasattr(self, 'settings_manager'):
+            debug_mode = self.settings_manager.get(SettingsCategory.ADVANCED, 'enable_debug_mode', False)
+
+            if debug_mode and metrics.operation_name:
+                self.status_bar.showMessage(
+                    f"Operation: {metrics.operation_name} took {metrics.operation_time:.2f}s | "
+                    f"Memory: {metrics.memory_mb:.1f}MB", 2000
+                )

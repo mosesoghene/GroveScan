@@ -10,6 +10,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
 
+
 from src.models import ExportSettings
 from src.utils.error_handling import ErrorHandler, ErrorSeverity
 
@@ -201,73 +202,106 @@ class ExportWorker(QThread):
         )
 
     def run(self):
-        """Run export in separate thread"""
+        """Run export in separate thread with performance optimization"""
+        from src.utils.performance_monitor import PerformanceMonitor
+
+        # Initialize performance monitoring for export
+        perf_monitor = PerformanceMonitor(warning_threshold_mb=2048)  # Higher threshold during export
+
         try:
             self._save_export_state()
 
             total_docs = len(self.export_groups)
             completed_count = len(self.export_state.completed_groups) if self.resume_state else 0
 
-            for i, group in enumerate(self.export_groups):
+            # Process in smaller batches for memory management
+            batch_size = 5 if total_docs > 20 else total_docs
+
+            for batch_start in range(0, total_docs, batch_size):
                 if self.should_stop:
                     break
 
-                # Skip already completed groups if resuming
-                if group['assignment_id'] in self.export_state.completed_groups:
-                    continue
+                batch_end = min(batch_start + batch_size, total_docs)
+                current_batch = self.export_groups[batch_start:batch_end]
 
-                document_name = group['filename']
-                self.export_progress.emit(completed_count, total_docs, f"Exporting: {document_name}")
+                # Process batch with memory monitoring
+                with perf_monitor.measure_operation(f"export_batch_{batch_start}"):
+                    self._process_export_batch(current_batch, completed_count, total_docs, perf_monitor)
 
-                try:
-                    output_path = self._export_document_group(group)
-                    if output_path:
-                        self.document_exported.emit(document_name, output_path)
-                        self.successful_exports += 1
-                        self.export_state.completed_groups.append(group['assignment_id'])
-                    else:
-                        error_msg = "Failed to create document"
-                        self.export_error.emit(document_name, error_msg)
-                        self.export_state.failed_groups.append((group['assignment_id'], error_msg))
-
-                except PermissionError as e:
-                    error_msg = "Permission denied - check file permissions"
-                    self.error_handler.handle_error(e, f"Export permission error: {document_name}", ErrorSeverity.ERROR)
-                    self.export_error.emit(document_name, error_msg)
-                    self.export_state.failed_groups.append((group['assignment_id'], error_msg))
-                except OSError as e:
-                    error_msg = "Disk error - check available space"
-                    self.error_handler.handle_error(e, f"Export disk error: {document_name}", ErrorSeverity.ERROR)
-                    self.export_error.emit(document_name, error_msg)
-                    self.export_state.failed_groups.append((group['assignment_id'], error_msg))
-                except MemoryError as e:
-                    error_msg = "Out of memory - try reducing batch size"
-                    self.error_handler.handle_error(e, f"Export memory error: {document_name}", ErrorSeverity.ERROR)
-                    self.export_error.emit(document_name, error_msg)
-                    self.export_state.failed_groups.append((group['assignment_id'], error_msg))
-                except Exception as e:
-                    error_msg = str(e)
-                    self.error_handler.handle_error(e, f"Export error: {document_name}", ErrorSeverity.ERROR)
-                    self.export_error.emit(document_name, error_msg)
-                    self.export_state.failed_groups.append((group['assignment_id'], error_msg))
-
-                completed_count += 1
-                self.export_state.last_update_timestamp = datetime.now().isoformat()
-                self._save_export_state()
-
-                # Memory management - clear cache periodically
-                if completed_count % 5 == 0:
+                # Force cleanup between batches for large exports
+                if total_docs > 50:
                     self.memory_manager.clear_images()
+                    perf_monitor.force_garbage_collection()
 
-                # Small delay for UI responsiveness
-                self.msleep(50)
+                    # Small pause to prevent CPU overload
+                    self.msleep(100)
 
             self.export_completed.emit(self.successful_exports, total_docs)
             self._cleanup_export_state()
 
+        except MemoryError:
+            self.export_error.emit("Export Process", "Out of memory. Try exporting fewer documents at once.")
         except Exception as e:
-            self.error_handler.handle_error(e, "Export process critical error", ErrorSeverity.CRITICAL)
             self.export_error.emit("Export Process", f"Critical error: {str(e)}")
+
+    def _process_export_batch(self, batch_groups: List[Dict], completed_count: int, total_docs: int, perf_monitor):
+        """Process a batch of export groups"""
+        for i, group in enumerate(batch_groups):
+            if self.should_stop:
+                break
+
+            # Skip already completed groups if resuming
+            if group['assignment_id'] in self.export_state.completed_groups:
+                continue
+
+            document_name = group['filename']
+            current_progress = completed_count + i
+            self.export_progress.emit(current_progress, total_docs, f"Exporting: {document_name}")
+
+            try:
+                # Monitor memory usage before processing large documents
+                current_memory = psutil.Process().memory_info().rss / 1024 / 1024
+
+                if current_memory > 1500:  # 1.5GB threshold
+                    self.memory_manager.clear_images()
+                    perf_monitor.force_garbage_collection()
+
+                with perf_monitor.measure_operation(f"export_document_{document_name}"):
+                    output_path = self._export_document_group(group)
+
+                if output_path:
+                    self.document_exported.emit(document_name, output_path)
+                    self.successful_exports += 1
+                    self.export_state.completed_groups.append(group['assignment_id'])
+                else:
+                    error_msg = "Failed to create document"
+                    self.export_error.emit(document_name, error_msg)
+                    self.export_state.failed_groups.append((group['assignment_id'], error_msg))
+
+            except MemoryError:
+                error_msg = "Out of memory - try reducing batch size"
+                self.export_error.emit(document_name, error_msg)
+                self.export_state.failed_groups.append((group['assignment_id'], error_msg))
+
+                # Clear memory and continue
+                self.memory_manager.clear_images()
+                perf_monitor.force_garbage_collection()
+
+            except Exception as e:
+                error_msg = str(e)
+                self.export_error.emit(document_name, error_msg)
+                self.export_state.failed_groups.append((group['assignment_id'], error_msg))
+
+            completed_count += 1
+            self.export_state.last_update_timestamp = datetime.now().isoformat()
+            self._save_export_state()
+
+            # Periodic cleanup
+            if (completed_count + i) % 3 == 0:
+                self.memory_manager.clear_images()
+
+            # Small delay for UI responsiveness
+            self.msleep(25)  # Reduced from 50ms
 
     def _export_document_group(self, group: Dict) -> Optional[str]:
         """Export a single document group with multiple format support"""
