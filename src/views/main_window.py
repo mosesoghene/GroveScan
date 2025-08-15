@@ -8,6 +8,7 @@ from PySide6.QtGui import QAction, QKeySequence
 from src.controllers.app_controller import ApplicationController
 from .enhanced_export_dialog import EnhancedExportPreviewDialog
 from .export_dialog import ExportProgressDialog
+from .settings_dialog import SettingsDialog
 from .workflow_widget import WorkflowStatusWidget
 from .dynamic_index_editor import DynamicIndexEditor
 from .document_grid_view import DocumentGridView
@@ -15,7 +16,8 @@ from .page_assignment_view import PageAssignmentView
 from .scanner_control_view import ScannerControlView
 from .profile_dialog import ProfileManagerDialog, QuickProfileDialog
 from src.models.scan_profile import ScanProfile, ExportSettings
-
+from ..utils.error_handling import ErrorHandler
+from ..utils.settings_manager import SettingsManager, SettingsCategory
 
 
 class MainWindow(QMainWindow):
@@ -37,12 +39,20 @@ class MainWindow(QMainWindow):
         # State tracking
         self.current_tab_index = 0
 
+        self.error_handler = ErrorHandler()
+
+        # Settings management
+        self.settings_manager = SettingsManager()
+        self.settings_manager.settings_changed.connect(self._on_settings_changed)
+
         self._setup_ui()
         self._connect_signals()
         self._setup_menu_and_toolbar()
 
         # Initialize with a timer to ensure everything is loaded
         QTimer.singleShot(100, self._initialize_application)
+
+        self._restore_window_state()
 
     def _setup_ui(self):
         """Setup the main user interface"""
@@ -291,6 +301,14 @@ class MainWindow(QMainWindow):
 
         preview_action = QAction("Preview Export Structure", self)
         preview_action.triggered.connect(self._preview_export_structure)
+
+        tools_menu.addSeparator()
+
+        preferences_action = QAction("Preferences...", self)
+        preferences_action.setShortcut(QKeySequence("Ctrl+,"))
+        preferences_action.triggered.connect(self._show_preferences)
+        tools_menu.addAction(preferences_action)
+
         tools_menu.addAction(preview_action)
 
         # Help menu
@@ -325,8 +343,17 @@ class MainWindow(QMainWindow):
 
     def _on_critical_error(self, error_message: str):
         """Handle critical errors"""
-        QMessageBox.critical(self, "Error", error_message)
-        self.status_bar.showMessage(f"Error: {error_message}")
+        # Log the error
+        self.error_handler.logger.critical(f"Critical application error: {error_message}")
+
+        # Show user-friendly message
+        QMessageBox.critical(
+            self,
+            "Critical Error",
+            f"A critical error has occurred:\n\n{error_message}\n\n" +
+            "The application may need to be restarted. Please save any unsaved work."
+        )
+        self.status_bar.showMessage(f"Critical Error: {error_message}")
 
     def _on_workflow_step_selected(self, step_name: str):
         """Handle workflow step selection"""
@@ -821,6 +848,102 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(
                 f"Export completed with issues. {success_count} successful, {failed_count} failed.", 5000)
 
+    def _restore_window_state(self):
+        """Restore window state from settings"""
+        try:
+            ui_settings = self.settings_manager.get_ui_settings()
+
+            # Restore window geometry
+            x, y, width, height = ui_settings.window_geometry
+            self.setGeometry(x, y, width, height)
+
+            if ui_settings.window_maximized:
+                self.showMaximized()
+
+            # Restore current tab
+            if ui_settings.current_tab < self.tab_widget.count():
+                self.tab_widget.setCurrentIndex(ui_settings.current_tab)
+
+        except Exception as e:
+            self.error_handler.handle_error(e, "Restore window state")
+
+    def _save_window_state(self):
+        """Save current window state to settings"""
+        try:
+            # Save window geometry
+            geometry = (self.x(), self.y(), self.width(), self.height())
+            self.settings_manager.set(SettingsCategory.UI, 'window_geometry', geometry)
+
+            # Save maximized state
+            self.settings_manager.set(SettingsCategory.UI, 'window_maximized', self.isMaximized())
+
+            # Save current tab
+            self.settings_manager.set(SettingsCategory.UI, 'current_tab', self.tab_widget.currentIndex())
+
+        except Exception as e:
+            self.error_handler.handle_error(e, "Save window state")
+
+    def _on_settings_changed(self, category: str, key: str, value):
+        """Handle settings changes"""
+        if category == "ui":
+            self._apply_ui_settings()
+        elif category == "scanner":
+            self._apply_scanner_settings()
+        elif category == "export":
+            self._apply_export_settings()
+
+    def _apply_ui_settings(self):
+        """Apply UI settings changes"""
+        ui_settings = self.settings_manager.get_ui_settings()
+
+        # Apply theme changes
+        if ui_settings.theme == "dark":
+            self.setStyleSheet(self._get_dark_theme_stylesheet())
+        elif ui_settings.theme == "light":
+            self.setStyleSheet(self._get_light_theme_stylesheet())
+        else:
+            self.setStyleSheet("")
+
+    def _get_dark_theme_stylesheet(self) -> str:
+        """Get dark theme stylesheet"""
+        return """
+            QMainWindow, QWidget {
+                background-color: #2b2b2b;
+                color: #ffffff;
+            }
+            QGroupBox {
+                background-color: #3c3c3c;
+                border: 1px solid #555;
+                border-radius: 4px;
+                margin-top: 8px;
+                padding-top: 8px;
+            }
+            QTabWidget::pane {
+                background-color: #3c3c3c;
+                border: 1px solid #555;
+            }
+            QTabBar::tab {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                padding: 8px 16px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background-color: #0078d4;
+            }
+        """
+
+    def _show_preferences(self):
+        """Show preferences dialog"""
+        dialog = SettingsDialog(self.settings_manager, self)
+        dialog.settings_applied.connect(self._on_settings_applied)
+        dialog.exec()
+
+    def _on_settings_applied(self):
+        """Handle settings being applied"""
+        self.status_bar.showMessage("Settings applied successfully", 3000)
+
+
     def _show_about(self):
         """Show about dialog"""
         QMessageBox.about(
@@ -848,4 +971,5 @@ class MainWindow(QMainWindow):
         if self.app_controller.document_controller.current_batch:
             self.app_controller.document_controller.current_batch.cleanup_all_files()
 
+        self._save_window_state()
         event.accept()

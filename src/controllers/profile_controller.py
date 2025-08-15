@@ -7,6 +7,8 @@ import json
 import os
 from datetime import datetime
 
+from src.utils.error_handling import ErrorHandler, ErrorSeverity
+
 
 class ProfileController(QObject):
     """Controller for profile management operations"""
@@ -23,6 +25,7 @@ class ProfileController(QObject):
         super().__init__()
         self.current_profile = None
         self.profiles_directory = "profiles"
+        self.error_handler = ErrorHandler()
         self._ensure_profiles_directory()
 
     def _ensure_profiles_directory(self):
@@ -79,7 +82,16 @@ class ProfileController(QObject):
             self.profile_saved.emit(profile.name)
             return True
 
+        except PermissionError as e:
+            self.error_handler.handle_error(e, "Profile save - permission denied", ErrorSeverity.ERROR)
+            self.operation_error.emit("Permission denied. Please check write permissions for the profiles folder.")
+            return False
+        except OSError as e:
+            self.error_handler.handle_error(e, "Profile save - disk error", ErrorSeverity.ERROR)
+            self.operation_error.emit("Disk error occurred while saving profile. Check available disk space.")
+            return False
         except Exception as e:
+            self.error_handler.handle_error(e, "Profile save", ErrorSeverity.ERROR)
             self.operation_error.emit(f"Failed to save profile: {str(e)}")
             return False
 

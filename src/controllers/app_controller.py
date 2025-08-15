@@ -9,6 +9,7 @@ from src.controllers.page_assignment_controller import PageAssignmentController
 from src.models.scan_profile import ScanProfile
 from src.models.document_batch import DocumentBatch
 from src.models.dynamic_index_schema import DynamicIndexSchema
+from src.utils.error_handling import ErrorHandler, ErrorSeverity
 
 
 class ApplicationController(QObject):
@@ -38,7 +39,17 @@ class ApplicationController(QObject):
             'ready_to_export': False
         }
 
+        self.error_handler = ErrorHandler()
+        self.error_handler.error_occurred.connect(self._on_error_occurred)
+
         self._connect_controllers()
+
+    def _on_error_occurred(self, error):
+        """Handle application errors"""
+        if error.severity == ErrorSeverity.CRITICAL:
+            self.critical_error.emit(error.message)
+        else:
+            print(f"Error: {error.message}")
 
     def _connect_controllers(self):
         """Connect signals between controllers"""

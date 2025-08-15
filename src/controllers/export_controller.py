@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from src.models import ExportSettings
+from src.utils.error_handling import ErrorHandler, ErrorSeverity
 
 # Try to import reportlab for advanced PDF features
 try:
@@ -139,6 +140,7 @@ class MemoryManager:
         self.current_images = []
         self.memory_usage_mb = 0
 
+
     def can_load_image(self, estimated_size_mb: float) -> bool:
         """Check if we can load another image without exceeding memory limit"""
         return (self.memory_usage_mb + estimated_size_mb) <= self.max_memory_mb
@@ -184,6 +186,7 @@ class ExportWorker(QThread):
         self.should_stop = False
         self.successful_exports = 0
         self.memory_manager = MemoryManager()
+        self.error_handler = ErrorHandler()
 
         # Create export state for resumability
         self.export_state = resume_state or ExportState(
@@ -227,8 +230,24 @@ class ExportWorker(QThread):
                         self.export_error.emit(document_name, error_msg)
                         self.export_state.failed_groups.append((group['assignment_id'], error_msg))
 
+                except PermissionError as e:
+                    error_msg = "Permission denied - check file permissions"
+                    self.error_handler.handle_error(e, f"Export permission error: {document_name}", ErrorSeverity.ERROR)
+                    self.export_error.emit(document_name, error_msg)
+                    self.export_state.failed_groups.append((group['assignment_id'], error_msg))
+                except OSError as e:
+                    error_msg = "Disk error - check available space"
+                    self.error_handler.handle_error(e, f"Export disk error: {document_name}", ErrorSeverity.ERROR)
+                    self.export_error.emit(document_name, error_msg)
+                    self.export_state.failed_groups.append((group['assignment_id'], error_msg))
+                except MemoryError as e:
+                    error_msg = "Out of memory - try reducing batch size"
+                    self.error_handler.handle_error(e, f"Export memory error: {document_name}", ErrorSeverity.ERROR)
+                    self.export_error.emit(document_name, error_msg)
+                    self.export_state.failed_groups.append((group['assignment_id'], error_msg))
                 except Exception as e:
                     error_msg = str(e)
+                    self.error_handler.handle_error(e, f"Export error: {document_name}", ErrorSeverity.ERROR)
                     self.export_error.emit(document_name, error_msg)
                     self.export_state.failed_groups.append((group['assignment_id'], error_msg))
 
@@ -247,6 +266,7 @@ class ExportWorker(QThread):
             self._cleanup_export_state()
 
         except Exception as e:
+            self.error_handler.handle_error(e, "Export process critical error", ErrorSeverity.CRITICAL)
             self.export_error.emit("Export Process", f"Critical error: {str(e)}")
 
     def _export_document_group(self, group: Dict) -> Optional[str]:
@@ -668,6 +688,7 @@ class DocumentExportController(QObject):
         self.current_batch = None
         self.current_schema = None
         self.export_settings = None
+        self.error_handler = ErrorHandler()
 
     def set_current_batch(self, batch: DocumentBatch):
         """Set current document batch"""

@@ -6,6 +6,8 @@ from ..models.scan_profile import ScannerSettings
 from ..models.scanned_page import ScannedPage
 import uuid
 
+from ..utils.error_handling import ErrorHandler, ErrorSeverity
+
 
 class ScanWorker(QThread):
     """Worker thread for scanning operations"""
@@ -69,6 +71,7 @@ class ScanController(QObject):
         self.current_device = None
         self.current_batch = None
         self.scan_worker = None
+        self.error_handler = ErrorHandler()
 
         # Auto-discover devices on startup
         QTimer.singleShot(1000, self.discover_devices)
@@ -79,7 +82,8 @@ class ScanController(QObject):
             devices = self.scanner_interface.discover_devices()
             self.devices_discovered.emit(devices)
         except Exception as e:
-            self.scan_error.emit(f"Error discovering devices: {str(e)}")
+            self.error_handler.handle_error(e, "Device discovery", ErrorSeverity.WARNING)
+            self.scan_error.emit(f"Failed to discover devices: {str(e)}")
 
     def connect_device(self, device_id: str):
         """Connect to a scanner device"""

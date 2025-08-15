@@ -57,8 +57,14 @@ class ScannedPage:
                 self.thumbnail_path = thumbnail_path
                 return thumbnail_path
 
+        except PermissionError:
+            print(f"Permission denied creating thumbnail for {self.page_id}")
+            return ""
+        except OSError as e:
+            print(f"Disk error creating thumbnail for {self.page_id}: {e}")
+            return ""
         except Exception as e:
-            print(f"Error generating thumbnail: {e}")
+            print(f"Error generating thumbnail for {self.page_id}: {e}")
             return ""
 
     def rotate_page(self, degrees: int):
