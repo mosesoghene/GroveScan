@@ -1,17 +1,21 @@
+# Update to src/controllers/profile_controller.py
+
 from PySide6.QtCore import QObject, Signal
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from src.models.scan_profile import ScanProfile
 from src.models.dynamic_index_schema import DynamicIndexSchema
 from src.models.index_field import IndexField, IndexFieldType
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
 from src.utils.error_handling import ErrorHandler, ErrorSeverity
+from src.utils.settings_manager import UserDataManager
 
 
 class ProfileController(QObject):
-    """Controller for profile management operations"""
+    """Enhanced controller for profile management with proper user data directories"""
 
     # Signals
     profile_loaded = Signal(object)  # ScanProfile
@@ -24,14 +28,44 @@ class ProfileController(QObject):
     def __init__(self):
         super().__init__()
         self.current_profile = None
-        self.profiles_directory = "profiles"
+
+        # Use user data manager for proper directory handling
+        self.user_data = UserDataManager()
+        self.profiles_directory = self.user_data.get_profiles_dir()
+
         self.error_handler = ErrorHandler()
         self._ensure_profiles_directory()
 
     def _ensure_profiles_directory(self):
-        """Ensure profiles directory exists"""
-        if not os.path.exists(self.profiles_directory):
-            os.makedirs(self.profiles_directory)
+        """Ensure profiles directory exists and create welcome file"""
+        self.profiles_directory.mkdir(parents=True, exist_ok=True)
+
+        # Create a README file in the profiles directory if it doesn't exist
+        readme_file = self.profiles_directory / "README.txt"
+        if not readme_file.exists():
+            readme_content = """Dynamic Scanner Profiles
+========================
+
+This folder contains your scanning profiles.
+Profiles define the structure and organization of your scanned documents.
+
+You can:
+- Create new profiles in the application
+- Import/export profiles as JSON files
+- Back up this folder to preserve your configurations
+
+Each profile (.json file) contains:
+- Index field definitions (folder structure, filename components)
+- Default scanner settings (resolution, color mode, format)
+- Export preferences (PDF quality, folder creation options)
+
+Profile files are stored as JSON and can be shared between installations.
+"""
+            try:
+                with open(readme_file, 'w', encoding='utf-8') as f:
+                    f.write(readme_content)
+            except Exception:
+                pass  # Don't fail if we can't create the README
 
     def create_new_profile(self, name: str, description: str = "") -> ScanProfile:
         """Create a new profile"""
@@ -60,18 +94,19 @@ class ProfileController(QObject):
             return None
 
     def save_profile(self, profile: ScanProfile, save_as: bool = False) -> bool:
-        """Save a profile to disk"""
+        """Save a profile to the user profiles directory"""
         try:
             # Update modification timestamp
             profile.update_modified_date()
 
-            # Generate filename
-            filename = f"{profile.name.replace(' ', '_').replace('/', '_').lower()}.json"
-            filepath = os.path.join(self.profiles_directory, filename)
+            # Generate filename - use safe filename
+            safe_name = self._make_safe_filename(profile.name)
+            filename = f"{safe_name}.json"
+            filepath = self.profiles_directory / filename
 
             # Check for conflicts if not save_as
-            if not save_as and os.path.exists(filepath):
-                existing_profile = self.load_profile_from_file(filepath)
+            if not save_as and filepath.exists():
+                existing_profile = self.load_profile_from_file(str(filepath))
                 if existing_profile and existing_profile.name != profile.name:
                     raise ValueError(f"Filename conflict with existing profile")
 
@@ -94,6 +129,18 @@ class ProfileController(QObject):
             self.error_handler.handle_error(e, "Profile save", ErrorSeverity.ERROR)
             self.operation_error.emit(f"Failed to save profile: {str(e)}")
             return False
+
+    def _make_safe_filename(self, name: str) -> str:
+        """Make a safe filename from profile name"""
+        # Remove invalid characters for Windows/Linux/Mac
+        invalid_chars = '<>:"/\\|?*'
+        safe_name = name
+        for char in invalid_chars:
+            safe_name = safe_name.replace(char, '_')
+
+        # Remove leading/trailing spaces and dots, limit length
+        safe_name = safe_name.strip(' .').replace(' ', '_')
+        return safe_name[:50]  # Limit length for filesystem compatibility
 
     def load_profile(self, profile_name: str) -> Optional[ScanProfile]:
         """Load a profile by name"""
@@ -133,6 +180,7 @@ class ProfileController(QObject):
             if not filepath:
                 raise ValueError(f"Profile '{profile_name}' not found")
 
+            # Remove file
             os.remove(filepath)
             self.profile_deleted.emit(profile_name)
 
@@ -149,8 +197,13 @@ class ProfileController(QObject):
     def duplicate_profile(self, profile_name: str, new_name: str) -> Optional[ScanProfile]:
         """Duplicate an existing profile with new name"""
         try:
-            # Load original profile
-            original_profile = self.load_profile(profile_name)
+            # Load original profile - search by name first
+            original_profile = None
+            for available_profile in self.get_available_profiles():
+                if available_profile.name == profile_name:
+                    original_profile = available_profile
+                    break
+
             if not original_profile:
                 raise ValueError(f"Original profile '{profile_name}' not found")
 
@@ -168,19 +221,20 @@ class ProfileController(QObject):
             return None
 
     def get_available_profiles(self) -> List[ScanProfile]:
-        """Get list of available profiles"""
+        """Get list of available profiles from user directory"""
         profiles = []
 
         try:
-            if not os.path.exists(self.profiles_directory):
+            if not self.profiles_directory.exists():
                 return profiles
 
-            for filename in os.listdir(self.profiles_directory):
-                if filename.endswith('.json'):
-                    filepath = os.path.join(self.profiles_directory, filename)
-                    profile = self.load_profile_from_file(filepath)
-                    if profile:
-                        profiles.append(profile)
+            for filepath in self.profiles_directory.glob("*.json"):
+                if filepath.name == "README.txt":
+                    continue  # Skip README file
+
+                profile = self.load_profile_from_file(str(filepath))
+                if profile:
+                    profiles.append(profile)
 
             # Sort by name
             profiles.sort(key=lambda p: p.name.lower())
@@ -249,7 +303,7 @@ class ProfileController(QObject):
 
             # Check if profile already exists
             if self._profile_exists(profile.name):
-                # Could prompt user for new name or overwrite
+                # Suggest new name
                 profile.name = f"{profile.name}_imported"
 
             # Save to profiles directory
@@ -266,13 +320,15 @@ class ProfileController(QObject):
     def export_profile(self, profile_name: str, export_path: str) -> bool:
         """Export a profile to specified path"""
         try:
-            filepath = self._get_profile_filepath(profile_name)
-            if not filepath:
-                raise ValueError(f"Profile '{profile_name}' not found")
+            # Find profile by name
+            profile = None
+            for available_profile in self.get_available_profiles():
+                if available_profile.name == profile_name:
+                    profile = available_profile
+                    break
 
-            profile = self.load_profile_from_file(filepath)
             if not profile:
-                raise ValueError(f"Failed to load profile '{profile_name}'")
+                raise ValueError(f"Profile '{profile_name}' not found")
 
             # Save to export path
             with open(export_path, 'w', encoding='utf-8') as f:
@@ -330,17 +386,21 @@ class ProfileController(QObject):
 
     def _profile_exists(self, profile_name: str) -> bool:
         """Check if a profile with given name exists"""
-        return self._get_profile_filepath(profile_name) is not None
+        for profile in self.get_available_profiles():
+            if profile.name == profile_name:
+                return True
+        return False
 
     def _get_profile_filepath(self, profile_name: str) -> Optional[str]:
         """Get filepath for a profile by name"""
         try:
-            for filename in os.listdir(self.profiles_directory):
-                if filename.endswith('.json'):
-                    filepath = os.path.join(self.profiles_directory, filename)
-                    profile = self.load_profile_from_file(filepath)
-                    if profile and profile.name == profile_name:
-                        return filepath
+            for filepath in self.profiles_directory.glob("*.json"):
+                if filepath.name == "README.txt":
+                    continue
+
+                profile = self.load_profile_from_file(str(filepath))
+                if profile and profile.name == profile_name:
+                    return str(filepath)
         except Exception:
             pass
 
@@ -354,3 +414,116 @@ class ProfileController(QObject):
         """Set current active profile"""
         self.current_profile = profile
         self.profile_loaded.emit(profile)
+
+    def get_profiles_directory(self) -> Path:
+        """Get the profiles directory path"""
+        return self.profiles_directory
+
+    def get_profile_backup_info(self) -> Dict[str, Any]:
+        """Get information for profile backup purposes"""
+        profiles_info = []
+
+        for profile in self.get_available_profiles():
+            filepath = self._get_profile_filepath(profile.name)
+            if filepath:
+                file_path = Path(filepath)
+                profiles_info.append({
+                    'name': profile.name,
+                    'description': profile.description,
+                    'filepath': str(file_path),
+                    'size_kb': round(file_path.stat().st_size / 1024, 2) if file_path.exists() else 0,
+                    'modified': profile.modified_date,
+                    'field_count': len(profile.schema.fields)
+                })
+
+        return {
+            'profiles_directory': str(self.profiles_directory),
+            'profile_count': len(profiles_info),
+            'profiles': profiles_info,
+            'total_size_kb': sum(p['size_kb'] for p in profiles_info)
+        }
+
+    def create_profile_backup(self, backup_directory: str) -> bool:
+        """Create a backup of all profiles"""
+        try:
+            backup_path = Path(backup_directory)
+            backup_path.mkdir(parents=True, exist_ok=True)
+
+            # Create backup with timestamp
+            from datetime import datetime
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_name = f"dynamic_scanner_profiles_backup_{timestamp}"
+            backup_folder = backup_path / backup_name
+            backup_folder.mkdir()
+
+            # Copy all profile files
+            import shutil
+            copied_count = 0
+
+            for filepath in self.profiles_directory.glob("*.json"):
+                if filepath.name != "README.txt":
+                    dest_path = backup_folder / filepath.name
+                    shutil.copy2(filepath, dest_path)
+                    copied_count += 1
+
+            # Create backup info file
+            backup_info = {
+                'created': datetime.now().isoformat(),
+                'source_directory': str(self.profiles_directory),
+                'profile_count': copied_count,
+                'application': 'Dynamic Scanner',
+                'version': '1.0.0'
+            }
+
+            with open(backup_folder / "backup_info.json", 'w') as f:
+                json.dump(backup_info, f, indent=2)
+
+            print(f"Created profile backup: {backup_folder}")
+            return True
+
+        except Exception as e:
+            self.operation_error.emit(f"Failed to create backup: {str(e)}")
+            return False
+
+    def restore_profile_backup(self, backup_directory: str) -> bool:
+        """Restore profiles from a backup directory"""
+        try:
+            backup_path = Path(backup_directory)
+            if not backup_path.exists():
+                raise ValueError("Backup directory does not exist")
+
+            # Look for backup info file to validate
+            backup_info_file = backup_path / "backup_info.json"
+            if backup_info_file.exists():
+                with open(backup_info_file, 'r') as f:
+                    backup_info = json.load(f)
+                print(f"Restoring backup created: {backup_info.get('created', 'Unknown')}")
+
+            # Copy profile files
+            restored_count = 0
+            for json_file in backup_path.glob("*.json"):
+                if json_file.name == "backup_info.json":
+                    continue
+
+                # Validate it's a profile file by trying to load it
+                try:
+                    profile = self.load_profile_from_file(str(json_file))
+                    if profile:
+                        # Copy to profiles directory
+                        import shutil
+                        dest_path = self.profiles_directory / json_file.name
+                        shutil.copy2(json_file, dest_path)
+                        restored_count += 1
+                except Exception:
+                    print(f"Skipping invalid profile file: {json_file.name}")
+                    continue
+
+            # Refresh profiles list
+            self.profiles_updated.emit(self.get_available_profiles())
+
+            print(f"Restored {restored_count} profiles from backup")
+            return True
+
+        except Exception as e:
+            self.operation_error.emit(f"Failed to restore backup: {str(e)}")
+            return False

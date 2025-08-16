@@ -1,3 +1,4 @@
+import psutil
 from PySide6.QtCore import QObject, Signal, QThread
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
