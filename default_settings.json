@@ -1,0 +1,58 @@
+{
+    "ui": {
+        "window_geometry": [
+            100,
+            100,
+            1400,
+            900
+        ],
+        "window_maximized": false,
+        "splitter_sizes": {
+            "main_splitter": [
+                350,
+                1050
+            ],
+            "assignment_splitter": [
+                400,
+                300,
+                300
+            ]
+        },
+        "current_tab": 0,
+        "show_tooltips": true,
+        "theme": "default",
+        "font_size": 10
+    },
+    "scanner": {
+        "default_resolution": 300,
+        "default_color_mode": "Color",
+        "default_format": "TIFF",
+        "default_quality": 95,
+        "auto_detect_devices": true,
+        "device_timeout": 30
+    },
+    "export": {
+        "default_output_dir": "",
+        "remember_last_directory": true,
+        "default_template": "High Quality PDF",
+        "confirm_overwrite": true,
+        "show_progress_details": true,
+        "auto_cleanup_temp": true
+    },
+    "general": {
+        "auto_save_profiles": true,
+        "backup_profiles": true,
+        "max_recent_profiles": 10,
+        "startup_check_updates": false,
+        "crash_reporting": true,
+        "log_level": "INFO"
+    },
+    "advanced": {
+        "memory_limit_mb": 512,
+        "temp_directory": "",
+        "max_undo_levels": 10,
+        "enable_debug_mode": false,
+        "parallel_export": true,
+        "cache_thumbnails": true
+    }
+}
